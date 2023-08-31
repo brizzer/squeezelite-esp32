@@ -1,0 +1,3 @@
+{
+  "dac_config": "model=ES8388,bck=5,ws=25,do=26,sda=18,scl=23,i2c=16"
+}

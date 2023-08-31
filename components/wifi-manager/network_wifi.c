@@ -632,8 +632,11 @@ const wifi_sta_config_t* network_wifi_load_active_config() {
             ESP_LOGW(TAG, "No wifi ssid found in nvs, but known access points found. Using first known access point.");
             known_access_point_t* ap = SLIST_FIRST(&s_ap_list);
             if (ap) {
+                #pragma GCC diagnostic push
+                #pragma GCC diagnostic ignored "-Wstringop-truncation"
                 strncpy((char*)&config.ssid, ap->ssid, sizeof(config.ssid));
                 strncpy((char*)&config.password, ap->password, sizeof(config.password));
+                #pragma GCC diagnostic pop
             }
             esp_err = ESP_OK;
         } else {

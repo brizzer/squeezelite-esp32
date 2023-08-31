@@ -414,3 +414,30 @@ void _apply_gain(struct buffer *outputbuf, frames_t count, s32_t gainL, s32_t ga
 	}
 }
 
+void _apply_mix(struct buffer *outputbuf, frames_t count, bool mix_left, bool mix_right) {
+	ISAMPLE_T *ptrL = (ISAMPLE_T *)(void *)outputbuf->readp;
+	ISAMPLE_T *ptrR = (ISAMPLE_T *)(void *)outputbuf->readp + 1;
+	if (mix_left && mix_right){
+		while (count--) {
+			*ptrR = (*ptrL + *ptrR) / 2;
+			*ptrL = *ptrR;
+			ptrL += 2;
+			ptrR += 2;
+		}
+	}
+	else if (mix_left){
+		while (count--) {
+			*ptrR = *ptrL;
+			ptrL += 2;
+			ptrR += 2;
+		}
+	}
+	else { /* mix right */
+		while (count--) {
+			*ptrL = *ptrR;
+			ptrL += 2;
+			ptrR += 2;
+		}
+	}
+}
+

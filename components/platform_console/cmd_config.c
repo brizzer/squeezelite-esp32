@@ -20,6 +20,10 @@
 #include "tools.h"
 #include "cJSON.h"
 #include "cmd_i2ctools.h"
+// #include "squeezelite.h"
+// #include "equalizer.h"
+
+#define EQ_BANDS 10
 
 const char * desc_squeezelite ="Squeezelite Options";
 const char * desc_dac= "DAC Options";
@@ -131,6 +135,13 @@ static struct {
 static struct {
     struct arg_str *jack_behavior;	
 	struct arg_int *loudness;
+	struct arg_lit *two_way_speaker;
+	struct arg_str *filter_json;
+	// struct arg_str *eq_right;
+	struct arg_int *delay_left;
+	struct arg_int *delay_right;
+	struct arg_int *eq_lpf_freq;
+	struct arg_int *eq_hpf_freq;
     struct arg_end *end;
 } audio_args;
 static struct {
@@ -483,6 +494,166 @@ static int do_audio_cmd(int argc, char **argv){
         }        
     }
 
+	if (audio_args.filter_json->count>0) {
+		// TODO: error checking
+		err = config_set_value(NVS_TYPE_STR, "filter_json", audio_args.filter_json->sval[0]);
+		fprintf(f,"filter_json changed to %s\n",audio_args.filter_json->sval[0]);
+	} else {
+		err = config_set_value(NVS_TYPE_STR, "filter_json", "");
+		fprintf(f,"filter_json cleared\n");
+	}
+	// if(audio_args.eq_left->count>0){
+    //     err = ESP_OK; // suppress any error code that might have happened in a previous step
+	// 	char * config = strdup_psram(audio_args.eq_left->sval[0]);
+    //     char* p = strtok(config, ", !");
+	// 	uint8_t num_entries = 0;
+	// 	for (int i = 0; p && i < EQ_BANDS; i++) {
+	// 		num_entries++;
+	// 		p = strtok(NULL, ", :");
+	// 	}
+	// 	if (num_entries != EQ_BANDS) {
+	// 		nerrors++;
+    //         fprintf(f,"Invalid number of bands in eq left: %d, should be %d\n", num_entries, EQ_BANDS);
+	// 	}
+	// 	else {
+	// 		err = config_set_value(NVS_TYPE_STR, "eq_left", audio_args.eq_left->sval[0]);
+	// 	}
+    //     if(err!=ESP_OK){
+    //         nerrors++;
+    //         fprintf(f,"Error setting eq left  %s. %s\n",audio_args.eq_left->sval[0], esp_err_to_name(err));
+    //     }
+    //     else if (!nerrors){
+    //         fprintf(f,"eq left changed to %s\n",audio_args.eq_left->sval[0]);
+	// 		// TODO: apply eq
+    //     }  
+    // }
+
+	// if(audio_args.eq_right->count>0){
+	// 	err = ESP_OK; // suppress any error code that might have happened in a previous step
+	// 	char * config = strdup_psram(audio_args.eq_right->sval[0]);
+    //     char* p = strtok(config, ", !");
+	// 	uint8_t num_entries = 0;
+	// 	for (int i = 0; p && i < EQ_BANDS; i++) {
+	// 		num_entries++;
+	// 		p = strtok(NULL, ", :");
+	// 	}
+	// 	if (num_entries != EQ_BANDS) {
+	// 		nerrors++;
+    //         fprintf(f,"Invalid number of bands in eq right: %d, should be %d\n", num_entries, EQ_BANDS);
+	// 	}
+	// 	else {
+	// 		err = config_set_value(NVS_TYPE_STR, "eq_right", audio_args.eq_right->sval[0]);
+	// 	}
+    //     if(err!=ESP_OK){
+    //         nerrors++;
+    //         fprintf(f,"Error setting eq right  %s. %s\n",audio_args.eq_right->sval[0], esp_err_to_name(err));
+    //     }
+    //     else if (!nerrors){
+    //         fprintf(f,"eq right changed to %s\n",audio_args.eq_right->sval[0]);
+	// 		// TODO: apply eq
+    //     }  
+    // }
+
+	if(audio_args.delay_left->count>0){
+		char p[4]={0};
+		int delay_left_val = audio_args.delay_left->ival[0];
+		if( delay_left_val < 0 || delay_left_val>1000){
+			nerrors++;
+            fprintf(f,"Invalid delay_left value %d. Valid values are between 0 and 1000.\n",delay_left_val);
+		}
+		else {
+			itoa(delay_left_val,p,10);
+			err = config_set_value(NVS_TYPE_STR, "delay_left", p);
+		}
+        if(err!=ESP_OK){
+            nerrors++;
+            fprintf(f,"Error setting delay left value %s. %s\n",p, esp_err_to_name(err));
+        }
+        else {
+            fprintf(f,"Delay left changed to %s\n",p);
+			// TODO: apply delay
+        }
+	}
+
+	if(audio_args.delay_right->count>0){
+		char p[4]={0};
+		int delay_right_val = audio_args.delay_right->ival[0];
+		if( delay_right_val < 0 || delay_right_val>1000){
+			nerrors++;
+            fprintf(f,"Invalid delay_right value %d. Valid values are between 0 and 1000.\n",delay_right_val);
+		}
+		else {
+			itoa(delay_right_val,p,10);
+			err = config_set_value(NVS_TYPE_STR, "delay_right", p);
+		}
+        if(err!=ESP_OK){
+            nerrors++;
+            fprintf(f,"Error setting delay right value %s. %s\n",p, esp_err_to_name(err));
+        }
+        else {
+            fprintf(f,"Delay right changed to %s\n",p);
+			// TODO: apply delay
+        }
+	}
+
+	if(audio_args.eq_lpf_freq->count>0){
+		char p[4]={0};
+		int lpf_freq_val = audio_args.eq_lpf_freq->ival[0];
+		if( lpf_freq_val < 0 || lpf_freq_val>20000){
+			nerrors++;
+            fprintf(f,"Invalid eq_lpf_freq value %d. Valid values are between 0 and 20000.\n",lpf_freq_val);
+		}
+		else {
+			itoa(lpf_freq_val,p,10);
+			err = config_set_value(NVS_TYPE_STR, "eq_lpf_freq", p);
+		}
+        if(err!=ESP_OK){
+            nerrors++;
+            fprintf(f,"Error setting eq_lpf_freq value %s. %s\n",p, esp_err_to_name(err));
+        }
+        else {
+            fprintf(f,"eq_lpf_freq changed to %s\n",p);
+			// TODO: apply delay
+        }
+	}
+
+	if(audio_args.eq_hpf_freq->count>0){
+		char p[4]={0};
+		int hpf_freq_val = audio_args.eq_hpf_freq->ival[0];
+		if( hpf_freq_val < 0 || hpf_freq_val>20000){
+			nerrors++;
+            fprintf(f,"Invalid eq_hpf_freq value %d. Valid values are between 0 and 20000.\n",hpf_freq_val);
+		}
+		else {
+			itoa(hpf_freq_val,p,10);
+			err = config_set_value(NVS_TYPE_STR, "eq_hpf_freq", p);
+		}
+        if(err!=ESP_OK){
+            nerrors++;
+            fprintf(f,"Error setting eq_hpf_freq value %s. %s\n",p, esp_err_to_name(err));
+        }
+        else {
+            fprintf(f,"eq_hpf_freq changed to %s\n",p);
+			// TODO: apply delay
+        }
+	}
+
+	// int8_t two_way_speaker = audio_args.two_way_speaker->count>0;
+	// err = config_set_value(NVS_TYPE_I8, "two_way_speaker", &two_way_speaker);
+	err = config_set_value(NVS_TYPE_STR, "two_way_speaker", audio_args.two_way_speaker->count>0?"Y":"N");
+	if(err!=ESP_OK){
+		nerrors++;
+		fprintf(f,"Error setting two_way speaker value %s. %s\n",audio_args.two_way_speaker->count>0?"Y":"N", esp_err_to_name(err));
+	}
+	else {
+		fprintf(f,"Two way speaker changed to %s\n",audio_args.two_way_speaker->count>0?"Y":"N");
+		// TODO: apply delay
+	}
+
+
+	// equalizer_two_way_update();
+	// fprintf(f,"Equalizer updated.\n");
+
 	if(!nerrors ){
 		fprintf(f,"Done.\n");
 	}
@@ -492,6 +663,7 @@ static int do_audio_cmd(int argc, char **argv){
 	FREE_AND_NULL(buf);
 	return (nerrors==0 && err==ESP_OK)?0:1;
 }
+
 static int do_spdif_cmd(int argc, char **argv){
 		i2s_platform_config_t i2s_dac_pin = {
 		.i2c_addr = -1,
@@ -878,7 +1050,45 @@ cJSON * audio_cb(){
     FREE_AND_NULL(p);    
 	p = config_alloc_get_default(NVS_TYPE_STR, "loudness", "0", 0);
     cJSON_AddStringToObject(values,"loudness",p);
-    FREE_AND_NULL(p);    	
+    FREE_AND_NULL(p);
+
+	// p = config_alloc_get_default(NVS_TYPE_STR, "stereo_pair", false, 0);
+	// cJSON_AddBoolToObject(values,i2s_args.mute_level->hdr.longopts,i2s_conf->mute_level>0);
+	p = config_alloc_get_default(NVS_TYPE_STR, "filter_json", "", 0);
+	cJSON_AddStringToObject(values,"filter_json",p);
+	FREE_AND_NULL(p);
+
+	// p = config_alloc_get_default(NVS_TYPE_STR, "eq_left", "0,0,0,0,0,0,0,0,0,0", 0);
+	// cJSON_AddStringToObject(values,"eq_left",p);
+	// FREE_AND_NULL(p);
+	// p = config_alloc_get_default(NVS_TYPE_STR, "eq_right", "0,0,0,0,0,0,0,0,0,0", 0);
+	// cJSON_AddStringToObject(values,"eq_right",p);
+	// FREE_AND_NULL(p);
+	p = config_alloc_get_default(NVS_TYPE_STR, "eq_lpf_freq", "0", 0);
+    cJSON_AddStringToObject(values,"eq_lpf_freq",p);
+    FREE_AND_NULL(p);
+	p = config_alloc_get_default(NVS_TYPE_STR, "eq_hpf_freq", "0", 0);
+    cJSON_AddStringToObject(values,"eq_hpf_freq",p);
+    FREE_AND_NULL(p);
+	p = config_alloc_get_default(NVS_TYPE_STR, "delay_left", "0", 0);
+    cJSON_AddStringToObject(values,"delay_left",p);
+    FREE_AND_NULL(p);
+	p = config_alloc_get_default(NVS_TYPE_STR, "delay_right", "0", 0);
+    cJSON_AddStringToObject(values,"delay_right",p);
+    FREE_AND_NULL(p);
+	// cJSON_AddBoolToObject(values,audio_args.two_way_speaker->hdr.longopts,false);
+	p = config_alloc_get_default(NVS_TYPE_STR, "two_way_speaker", "N", 0);
+	bool two_way_speaker = p && (*p == '1' || *p == 'Y' || *p == 'y');
+   	cJSON_AddBoolToObject(values,"two_way_speaker",two_way_speaker);
+    FREE_AND_NULL(p);
+
+	// int *n = config_alloc_get_default(NVS_TYPE_I8, "two_way_speaker", 0, 0);
+	// bool two_way_speaker = n;
+	// cJSON_AddBoolToObject(values,"two_way_speaker",two_way_speaker);
+	// cJSON_AddNumberToObject(values,"two_way_speaker",two_way_speaker);
+	// FREE_AND_NULL(n);
+	
+
 	return values;
 }
 cJSON * bt_source_cb(){
@@ -1288,7 +1498,18 @@ static void register_rotary_config(void){
 static void register_audio_config(void){
 	audio_args.jack_behavior = arg_str0("j", "jack_behavior","Headphones|Subwoofer","On supported DAC, determines the audio jack behavior. Selecting headphones will cause the external amp to be muted on insert, while selecting Subwoofer will keep the amp active all the time.");
 	audio_args.loudness = arg_int0("l", "loudness","0-100","Sets the loudness level, from 0 to 100. 0 will disable the loudness completely.");	
-    audio_args.end = arg_end(6);
+    //audio_args.stereo_pair = arg_lit0(NULL,"stereo_pair", "Uses the eq settings below to use the squeezelite as one side of a stereo pair.");
+	audio_args.two_way_speaker = arg_lit0(NULL,"two_way_speaker","Uses the eq settings below to use the squeezelite as a 2 way speaker for example as one side of stereo pair.");
+	audio_args.filter_json = arg_str0(NULL,"filter_json","<string>","JSON for IIR filtering ex. [Type],[Frequency],[Gain],[Q],[Type],[Frequency],[Gain],[Q] etc, avaliable types: PK, LP, HP, LS, HS, NO, AP"); //[{\"Type\": \"PK\",\"Frequency\": \"420\",\"Gain\": \"-5.0\",\"Q\": \"4.0\"}, ...]
+	//audio_args.eq_left = arg_str0(NULL,"eq_left","<string>","10 band equlizer for left (high) channel. Format: 0,0,0,0,0,0,0,0,0,0");
+	// audio_args.eq_left = arg_strn(NULL,"eq_left","<string>",0,20,"10 band equlizer for left (high) channel.; format: 0|0|0|0|0|0|0|0|0|0" );
+	//audio_args.eq_right = arg_str0(NULL,"eq_right","<string>","10 band equlizer for right (low) channel. Format: 0,0,0,0,0,0,0,0,0,0");
+	// arg_strn("c","codecs","+" CODECS "+",0,20,"Restrict codecs to those specified, otherwise load all available codecs; known codecs: " CODECS );
+	audio_args.eq_hpf_freq = arg_int0(NULL, "eq_hpf_freq","0-20000","High pass filter frequency for the left (high) channel. 0 turns it off.");
+	audio_args.eq_lpf_freq = arg_int0(NULL, "eq_lpf_freq","0-20000","Low pass filter frequency for the right (low) channel. 0 turns it off.");
+	audio_args.delay_left = arg_int0(NULL, "delay_left","0-1000","Delay for the left (high) channel in us (3 us equals 1mm).");
+	audio_args.delay_right = arg_int0(NULL, "delay_right","0-1000","Delay for the right (low) channel in us (3 us equals 1mm).");
+	audio_args.end = arg_end(6);
 	const esp_console_cmd_t cmd = {
         .command = CFG_TYPE_AUDIO("general"),
         .help = desc_audio,
