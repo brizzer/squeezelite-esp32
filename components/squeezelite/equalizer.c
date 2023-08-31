@@ -18,6 +18,7 @@
 
 #define EQ_BANDS 10
 #define MAX_FILTERS 10
+#define CHANNEL_FILERS 2
 #define N_GAIN_CALC_LOOPS 10
 
 static log_level loglevel = lWARN; //lDEBUG; //lINFO;
@@ -72,6 +73,8 @@ bool biquad_hpf_process = false;
 
 float biquad_eq_taps[EQ_BANDS] = {31,62,125,250,500,1000,2000,4000,8000,16000};
 
+typedef enum {LEFT = 0, RIGHT = 1, BOTH = 2} channel_t;
+
 static struct {
 	void *handle;
 	float gain[EQ_BANDS];
@@ -90,11 +93,17 @@ typedef struct {
 	float q;
 	float biquad_coeffs[5];
 	float biquad_w[2];  
-	u8_t channel;
-} filter_config;
+	channel_t channel;
+	bool process;
+} filter_config_t;
 
-filter_config filters[MAX_FILTERS];
+filter_config_t filters[MAX_FILTERS];
+filter_config_t eq_filters[EQ_BANDS];
+filter_config_t filters[CHANNEL_FILERS];
 u8_t n_filters = 0;
+u8_t n_eq_filters = 0;
+u8_t n_cannel_filters = 0;
+
 
 bool equalizer_active = false;
 
@@ -171,6 +180,21 @@ s8_t* equalizer_get_config(char *config_name) {
 	return pGains;
 }
 
+void filters_reset(filter_config_t *filter, u8_t *n_filt) {
+	for (int i = 0; i < MAX_FILTERS; i++)
+	{
+		filter[i].frequency = 0.0;
+		filter[i].gain = 0.0;
+		filter[i].q = 0.0;
+		strcpy(filter[i].type, "");
+		filter[i].biquad_w[0] = 0;
+		filter[i].biquad_w[1] = 0;
+		filter[i].channel = BOTH;
+		filter[i].process = false;
+	}
+	n_filt = 0;
+}
+
 /****************************************************************************************
  * Get filter config
  */
@@ -178,16 +202,7 @@ void filters_get_config(char *config_name) {
 	uint8_t num_entries = 0;
 	char* config = config_alloc_get(NVS_TYPE_STR, config_name);
 	// LOG_INFO("filter_get_config %s: %s", config_name, config);
-	for (int i = 0; i < MAX_FILTERS; i++)
-	{
-		filters[i].frequency = 0.0;
-		filters[i].gain = 0.0;
-		filters[i].q = 0.0;
-		strcpy(filters[i].type, "");
-		filters[i].biquad_w[0] = 0;
-		filters[i].biquad_w[1] = 0;
-	}
-	n_filters = 0;
+	filters_reset(filters, n_filters);
 	
 	if (!config) {
 		LOG_WARN("%s Config not found", config_name);
@@ -269,6 +284,10 @@ void equalizer_update(s8_t* gain) {
 	config_set_value(NVS_TYPE_STR, "equalizer", config);
 	equalizer_apply_loudness();
 	equalizer_calc_real_gains();
+	filters_reset(eq_filters, n_eq_filters);
+	for (int i = 0; i < EQ_BANDS; i++) {
+		
+	}
 }
 
 void filters_update(u32_t sample_rate){
@@ -383,10 +402,11 @@ void biquad_update(u32_t sample_rate) {
 void equalizer_init(void) {
 	s8_t* pGains = equalizer_get_config("equalizer");
 	filters_get_config("filter_json");
+	filters_update(48000.0);
 	// equalizer_two_way_update();
 	equalizer_update(pGains);
 	biquad_update(48000.0);
-	filters_update(48000.0);
+	
 	LOG_INFO("initializing equalizer, loudness %s", loudness_factor > 0 ? "ENABLED" : "DISABLED");
 	free(pGains);
 }
@@ -587,7 +607,11 @@ void apply_biquad_eq(struct buffer *outputbuf, frames_t count) {
 //     }
 // }
 
+__attribute__((optimize("O2"))) void filter_all_biquad_i16(struct buffer *outputbuf, frames_t count, int channel)
+{
 
+
+}
 
 __attribute__((optimize("O2"))) void filter_biquad_i16(struct buffer *outputbuf, frames_t count, float *coef, float *w, int channel) 
 {
