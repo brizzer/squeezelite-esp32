@@ -140,8 +140,11 @@ static struct {
 	// struct arg_str *eq_right;
 	struct arg_int *delay_left;
 	struct arg_int *delay_right;
+	struct arg_int *gain_left;
+	struct arg_int *gain_right;
 	struct arg_int *eq_lpf_freq;
 	struct arg_int *eq_hpf_freq;
+
     struct arg_end *end;
 } audio_args;
 static struct {
@@ -593,6 +596,46 @@ static int do_audio_cmd(int argc, char **argv){
         else {
             fprintf(f,"Delay right changed to %s\n",p);
 			// TODO: apply delay
+        }
+	}
+
+	if(audio_args.gain_left->count>0){
+		char p[4]={0};
+		int gain_left_val = audio_args.gain_left->ival[0];
+		if( gain_left_val < -100 || gain_left_val>100){
+			nerrors++;
+            fprintf(f,"Invalid gain_left value %d. Valid values are between -100 and 100.\n",gain_left_val);
+		}
+		else {
+			itoa(gain_left_val,p,10);
+			err = config_set_value(NVS_TYPE_STR, "gain_left", p);
+		}
+        if(err!=ESP_OK){
+            nerrors++;
+            fprintf(f,"Error setting gain_left value %s. %s\n",p, esp_err_to_name(err));
+        }
+        else {
+            fprintf(f,"Gain left changed to %s\n",p);
+        }
+	}
+
+	if(audio_args.gain_right->count>0){
+		char p[4]={0};
+		int gain_right_val = audio_args.gain_right->ival[0];
+		if( gain_right_val < -100 || gain_right_val>100){
+			nerrors++;
+            fprintf(f,"Invalid gain_right value %d. Valid values are between -100 and 100.\n",gain_right_val);
+		}
+		else {
+			itoa(gain_right_val,p,10);
+			err = config_set_value(NVS_TYPE_STR, "gain_right", p);
+		}
+        if(err!=ESP_OK){
+            nerrors++;
+            fprintf(f,"Error setting gain_right value %s. %s\n",p, esp_err_to_name(err));
+        }
+        else {
+            fprintf(f,"Gain right changed to %s\n",p);
         }
 	}
 
@@ -1507,6 +1550,9 @@ static void register_audio_config(void){
 	// arg_strn("c","codecs","+" CODECS "+",0,20,"Restrict codecs to those specified, otherwise load all available codecs; known codecs: " CODECS );
 	audio_args.eq_hpf_freq = arg_int0(NULL, "eq_hpf_freq","0-20000","High pass filter frequency for the left (high) channel. 0 turns it off.");
 	audio_args.eq_lpf_freq = arg_int0(NULL, "eq_lpf_freq","0-20000","Low pass filter frequency for the right (low) channel. 0 turns it off.");
+	audio_args.gain_left = arg_int0(NULL, "gain_left","-100-100","Gain for the left (high) channel in dB/10.");
+	audio_args.gain_right = arg_int0(NULL, "gain_right","-100-100","Delay for the right (low) channel in dB/10.");
+	
 	audio_args.delay_left = arg_int0(NULL, "delay_left","0-1000","Delay for the left (high) channel in us (3 us equals 1mm).");
 	audio_args.delay_right = arg_int0(NULL, "delay_right","0-1000","Delay for the right (low) channel in us (3 us equals 1mm).");
 	audio_args.end = arg_end(6);

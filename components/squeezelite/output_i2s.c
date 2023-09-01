@@ -480,8 +480,9 @@ static int _i2s_write_frames(frames_t out_frames, bool silence, s32_t gainL, s32
 			_apply_mix(outputbuf, out_frames, mix_left, mix_right);
 		}
 	
-		apply_biquad(outputbuf, out_frames);
-		apply_biquad_eq(outputbuf, out_frames);
+		// apply_biquad(outputbuf, out_frames);
+		// apply_biquad_eq(outputbuf, out_frames);
+		apply_filters(outputbuf, out_frames);
 #endif
 
 		memcpy(obuf + oframes * BYTES_PER_FRAME, outputbuf->readp, out_frames * BYTES_PER_FRAME);
