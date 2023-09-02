@@ -18,7 +18,7 @@ typedef struct {
 	float gain;
 	float q;
 	float biquad_coeffs[5];
-	float biquad_w[2];  
+	float biquad_w[2][2];  
 	channel_t channel;
 	// bool coeffs_calculated;
 } filter_config_t;

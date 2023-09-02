@@ -262,8 +262,11 @@ void filters_reset(filter_config_t *filter, u8_t *n_filt, u8_t max_filters) {
 		filter[i].gain = 0.0;
 		filter[i].q = 0.0;
 		strcpy(filter[i].type, "");
-		filter[i].biquad_w[0] = 0;
-		filter[i].biquad_w[1] = 0;
+		filter[i].biquad_w[0][0] = 0;
+		filter[i].biquad_w[0][1] = 0;
+		filter[i].biquad_w[1][0] = 0;
+		filter[i].biquad_w[1][1] = 0;
+		
 		filter[i].channel = BOTH;
 		filter[i].biquad_coeffs[0] = 1;
 		filter[i].biquad_coeffs[1] = -2;
@@ -280,8 +283,10 @@ void filters_add(filter_config_t *filter, u8_t *n_filt, char *type, float freq, 
 	filter[*n_filt].gain = gain;
 	filter[*n_filt].q = q;
 	strncpy(filter[*n_filt].type, type, 2);
-	filter[*n_filt].biquad_w[0] = 0;
-	filter[*n_filt].biquad_w[1] = 0;
+	filter[*n_filt].biquad_w[0][0] = 0;
+	filter[*n_filt].biquad_w[0][1] = 0;
+	filter[*n_filt].biquad_w[1][0] = 0;
+	filter[*n_filt].biquad_w[1][1] = 0;
 	filter[*n_filt].channel = channel;
 	// filter[*n_filt].coeffs_calculated = false;
 	(*n_filt)++;
@@ -643,16 +648,16 @@ __attribute__((optimize("O2"))) void filter_all(struct buffer *outputbuf, frames
 
 		for (int i = 0; i < n_eq_filters; i++)
 		{
-			filter_biquad_i16(&temp, eq_filters[i].biquad_coeffs, eq_filters[i].biquad_w);
+			filter_biquad_i16(&temp, eq_filters[i].biquad_coeffs, eq_filters[i].biquad_w[channel]);
 		}
 		for (int i = 0; i < n_arb_filters; i++)
 		{
-			filter_biquad_i16(&temp, arb_filters[i].biquad_coeffs, arb_filters[i].biquad_w);
+			filter_biquad_i16(&temp, arb_filters[i].biquad_coeffs, arb_filters[i].biquad_w[channel]);
 		}
 		for (int i = 0; i < n_channel_filters; i++)
 		{
 			if (channel_filters[i].channel == channel) {
-				filter_biquad_i16(&temp, channel_filters[i].biquad_coeffs, channel_filters[i].biquad_w);
+				filter_biquad_i16(&temp, channel_filters[i].biquad_coeffs, channel_filters[i].biquad_w[channel]);
 			}
 			
 		}
