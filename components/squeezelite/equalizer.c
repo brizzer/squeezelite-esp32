@@ -75,8 +75,6 @@ bool biquad_hpf_process = false;
 
 float eq_taps[EQ_BANDS] = {31,62,125,250,500,1000,2000,4000,8000,16000};
 
-
-
 static struct {
 	void *handle;
 	float gain[EQ_BANDS];
@@ -86,7 +84,8 @@ static struct {
 	// float two_way_gain_right[EQ_BANDS];
 	float low_pass_filter_freq;
 	float high_pass_filter_freq;
-} equalizer = { .update = true };
+	u32_t sample_rate;
+} equalizer = { .update = true, .sample_rate = 44100 };
 
 
 
@@ -99,6 +98,7 @@ filter_config_t channel_filters[MAX_CHANNEL_FILERS];
 u8_t n_arb_filters = 0;
 u8_t n_eq_filters = 0;
 u8_t n_channel_filters = 0;
+
 
 
 bool equalizer_active = false;
@@ -292,7 +292,7 @@ void filters_add(filter_config_t *filter, u8_t *n_filt, char *type, float freq, 
 	(*n_filt)++;
 }
 
-void filters_calc_coeff(filter_config_t *filter, u8_t *n_filt, u32_t sample_rate) {
+__attribute__((optimize("O2"))) void filters_calc_coeff(filter_config_t *filter, u8_t *n_filt, u32_t sample_rate) {
 	LOG_DEBUG("Calculating filters");
 	for (int i = 0; i < *n_filt; i++)  // PK, LP, HP, LS, HS, NO, AP
 	{
@@ -301,10 +301,6 @@ void filters_calc_coeff(filter_config_t *filter, u8_t *n_filt, u32_t sample_rate
 		if (strcmp(filter[i].type, "PK") == 0) // peaking EQ
 		{
 			equlizer_biquad_gen_peakingEQ_f32(filter[i].biquad_coeffs, filter[i].frequency, (float)sample_rate, filter[i].q, filter[i].gain);
-			for (int j = 0; j < 5; j++)
-			{
-				LOG_INFO("PK filter coeffs %d, %f", i, filter[i].biquad_coeffs[j]);
-			}
 		} 
 		else if (strcmp(filter[i].type, "LP") == 0) // Low pass
 		{
@@ -337,11 +333,8 @@ void filters_calc_coeff(filter_config_t *filter, u8_t *n_filt, u32_t sample_rate
 			filter[i].biquad_coeffs[2] = 1;
 			filter[i].biquad_coeffs[3] = -2;
 			filter[i].biquad_coeffs[4] = 1;
-			// filter[i].process = false;
-			for (int j = 0; j < 5; j++)
-			{
-				LOG_INFO("PK filter coeffs %d, %f", i, filter[i].biquad_coeffs[j]);
-			}
+			LOG_WARN("Flat filter");
+
 		}
 	}
 }
@@ -386,7 +379,8 @@ void equalizer_update(s8_t* gain) {
 			filters_add(eq_filters, &n_eq_filters, "PK", eq_taps[i], equalizer.real_gain[i], EQ_Q, BOTH);
 		}
 	}
-	equalizer.update = true;
+	// equalizer.update = true;
+	filters_calc_coeff(eq_filters, &n_eq_filters, equalizer.sample_rate);
 }
 
 // void biquad_update(u32_t sample_rate) {
@@ -421,9 +415,9 @@ void equalizer_init(void) {
 	channel_filter_get_config();
 	// equalizer_two_way_update();
 	
-	filters_calc_coeff(eq_filters, &n_eq_filters, 48000);
-	filters_calc_coeff(arb_filters, &n_arb_filters, 48000);
-	filters_calc_coeff(channel_filters, &n_channel_filters, 48000);
+	// filters_calc_coeff(eq_filters, &n_eq_filters, 48000);
+	// filters_calc_coeff(arb_filters, &n_arb_filters, 48000);
+	// filters_calc_coeff(channel_filters, &n_channel_filters, 48000);
 
 	// biquad_update(48000.0);
 	// filters_update(48000.0);
@@ -434,10 +428,13 @@ void equalizer_init(void) {
 
 /****************************************************************************************
  * open equalizer
+ * 
+ * Called when the sample rate is changed
  */
 void equalizer_open(u32_t sample_rate) {
 	// in any case, need to clear update flag
 	equalizer.update = false;
+	equalizer.sample_rate = sample_rate;
 
 	if (sample_rate != 11025 && sample_rate != 22050 && sample_rate != 44100 && sample_rate != 48000) {
 		LOG_WARN("equalizer only supports 11025, 22050, 44100 and 48000 sample rates, not %u", sample_rate);
@@ -532,7 +529,7 @@ void equalizer_apply_loudness() {
 	
 	free(loudness_curve);
 	free(pGains);
-	equalizer.update = true;
+	// equalizer.update = true;
 }
 
 /****************************************************************************************
@@ -544,6 +541,7 @@ void equalizer_process(u8_t *buf, u32_t bytes, u32_t sample_rate) {
 		// equalizer_close();
 		equalizer_open(sample_rate);
 	}
+	equalizer.sample_rate = sample_rate;
 
 	// if (equalizer.handle) {
 	// 	esp_equalizer_process(equalizer.handle, buf, bytes, sample_rate, 2);
@@ -745,13 +743,14 @@ __attribute__((optimize("O2"))) void equlizer_biquad_gen_peakingEQ_f32(float *co
     float c = cosf(w0);
     float s = sinf(w0);
     float alpha = s / (2 * qFactor);
+	float alpha_div_A = alpha/A;
 
     float b0 = 1 + alpha*A;
     float b1 = -2 * c;
     float b2 = 1 - alpha*A;
-    float a0 = 1 + alpha/A;
+    float a0 = 1 + alpha_div_A;
     float a1 = b1;
-    float a2 = 1 - alpha/A;
+    float a2 = 1 - alpha_div_A;
 
     coeffs[0] = b0 / a0;
     coeffs[1] = b1 / a0;
