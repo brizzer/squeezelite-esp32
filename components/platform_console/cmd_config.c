@@ -1543,7 +1543,7 @@ static void register_audio_config(void){
 	audio_args.loudness = arg_int0("l", "loudness","0-100","Sets the loudness level, from 0 to 100. 0 will disable the loudness completely.");	
     //audio_args.stereo_pair = arg_lit0(NULL,"stereo_pair", "Uses the eq settings below to use the squeezelite as one side of a stereo pair.");
 	audio_args.two_way_speaker = arg_lit0(NULL,"two_way_speaker","Uses the eq settings below to use the squeezelite as a 2 way speaker for example as one side of stereo pair.");
-	audio_args.filter_json = arg_str0(NULL,"filter_json","<string>","JSON for IIR filtering ex. [Type],[Frequency],[Gain],[Q],[Type],[Frequency],[Gain],[Q] etc, avaliable types: PK, LP, HP, LS, HS, NO, AP"); //[{\"Type\": \"PK\",\"Frequency\": \"420\",\"Gain\": \"-5.0\",\"Q\": \"4.0\"}, ...]
+	audio_args.filter_json = arg_str0(NULL,"filter_json","<string>","JSON for IIR filtering ex. [Type],[Frequency],[Gain],[Q],[Type],[Frequency],[Gain],[Q] etc, avaliable types: PK, LP, HP, LS, HS, NO, AP, GA, L1, H1"); //[{\"Type\": \"PK\",\"Frequency\": \"420\",\"Gain\": \"-5.0\",\"Q\": \"4.0\"}, ...]
 	//audio_args.eq_left = arg_str0(NULL,"eq_left","<string>","10 band equlizer for left (high) channel. Format: 0,0,0,0,0,0,0,0,0,0");
 	// audio_args.eq_left = arg_strn(NULL,"eq_left","<string>",0,20,"10 band equlizer for left (high) channel.; format: 0|0|0|0|0|0|0|0|0|0" );
 	//audio_args.eq_right = arg_str0(NULL,"eq_right","<string>","10 band equlizer for right (low) channel. Format: 0,0,0,0,0,0,0,0,0,0");
@@ -1552,7 +1552,7 @@ static void register_audio_config(void){
 	audio_args.eq_lpf_freq = arg_int0(NULL, "eq_lpf_freq","0-20000","Low pass filter frequency for the right (low) channel. 0 turns it off.");
 	audio_args.gain_left = arg_int0(NULL, "gain_left","-100-100","Gain for the left (high) channel in dB/10.");
 	audio_args.gain_right = arg_int0(NULL, "gain_right","-100-100","Delay for the right (low) channel in dB/10.");
-	
+	// audio_args.filter_json = arg_str0(NULL,"filters_left","[Type],[Frequency],[Gain],[Q]","JSON for IIR filtering ex. [Type],[Frequency],[Gain],[Q],[Type],[Frequency],[Gain],[Q] etc, avaliable types: PK, LP, HP, LS, HS, NO, AP, GA, L1, H1");
 	audio_args.delay_left = arg_int0(NULL, "delay_left","0-1000","Delay for the left (high) channel in us (3 us equals 1mm).");
 	audio_args.delay_right = arg_int0(NULL, "delay_right","0-1000","Delay for the right (low) channel in us (3 us equals 1mm).");
 	audio_args.end = arg_end(6);

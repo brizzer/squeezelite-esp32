@@ -18,10 +18,11 @@
 
 #define EQ_BANDS 10
 #define MAX_ARB_FILTERS 10
-#define MAX_CHANNEL_FILERS 4
+#define MAX_CHANNEL_FILERS 5
 // #define MAX_FILTERS EQ_BANDS+MAX_ARB_FILTERS+CHANNEL_FILERS
-#define N_GAIN_CALC_LOOPS 10
+#define N_GAIN_CALC_LOOPS 5 //10
 #define EQ_Q 1.0
+#define CHANNEL_DELAY_BUFFER_SIZE 100 // 100us at 96kHz
 
 static log_level loglevel = lWARN; //lDEBUG; //lINFO;
 float loudness_factor = 0;
@@ -88,6 +89,11 @@ static struct {
 } equalizer = { .update = true, .sample_rate = 44100 };
 
 
+u16_t channel_delay = 0;
+channel_t channel_delay_channel = BOTH;
+ISAMPLE_T channel_delay_buffer[CHANNEL_DELAY_BUFFER_SIZE];
+u16_t channel_delay_buffer_pos = 0;
+u16_t channel_delay_buffer_read_pos = 0;
 
 float channel_gain[2];
 
@@ -192,6 +198,31 @@ void channel_filter_get_config() {
 	if (hpf_freq > 0) {
 		filters_add(channel_filters, &n_channel_filters, "LP", hpf_freq, 0.0, 0.7, LEFT);
 	}
+
+	channel_gain[LEFT] = equalizer_get_config_value_float("gain_left");
+	channel_gain[RIGHT] = equalizer_get_config_value_float("gain_right");
+}
+
+/****************************************************************************************
+ * Get channel filter config
+ */
+void delay_get_config() {
+
+	u16_t delay_left = equalizer_get_config_value_int("delay_left");
+	u16_t delay_right = equalizer_get_config_value_float("delay_right");
+
+	channel_delay_channel = BOTH;
+	channel_delay = 0;
+
+	if (delay_left > delay_right) {
+		channel_delay = delay_left - delay_right;
+		channel_delay_channel = LEFT;
+	} 
+	if (delay_right > delay_left) {
+		channel_delay = delay_right - delay_left;
+		channel_delay_channel = RIGHT;
+	} 
+
 }
 
 /****************************************************************************************
@@ -227,13 +258,13 @@ void arb_filters_get_config(char *config_name) {
 				// LOG_INFO("filter_get_config ok %s", p);
 				p = strtok(NULL, ", :");
 				// LOG_INFO("filter_get_config ok %s", p);
-				arb_filters[n_arb_filters].frequency = (float)atof(p);
+				arb_filters[n_arb_filters].frequency = (float)atoff(p);
 				p = strtok(NULL, ", :");
 				// LOG_INFO("filter_get_config ok %s", p);
-				arb_filters[n_arb_filters].gain = (float)atof(p);
+				arb_filters[n_arb_filters].gain = (float)atoff(p);
 				p = strtok(NULL, ", :");
 				// LOG_INFO("filter_get_config ok %s", p);
-				arb_filters[n_arb_filters].q = (float)atof(p);
+				arb_filters[n_arb_filters].q = (float)atoff(p);
 				p = strtok(NULL, ", :");
 
 				n_arb_filters++;
@@ -282,7 +313,7 @@ void filters_add(filter_config_t *filter, u8_t *n_filt, char *type, float freq, 
 	filter[*n_filt].frequency = freq;
 	filter[*n_filt].gain = gain;
 	filter[*n_filt].q = q;
-	strncpy(filter[*n_filt].type, type, 2);
+	strncpy(filter[*n_filt].type, type, 3);
 	filter[*n_filt].biquad_w[0][0] = 0;
 	filter[*n_filt].biquad_w[0][1] = 0;
 	filter[*n_filt].biquad_w[1][0] = 0;
@@ -290,6 +321,20 @@ void filters_add(filter_config_t *filter, u8_t *n_filt, char *type, float freq, 
 	filter[*n_filt].channel = channel;
 	// filter[*n_filt].coeffs_calculated = false;
 	(*n_filt)++;
+}
+
+void filters_set(filter_config_t *filter, u8_t *n_filt, char *type, float freq, float gain, float q, channel_t channel) {
+	filter[*n_filt].frequency = freq;
+	filter[*n_filt].gain = gain;
+	filter[*n_filt].q = q;
+	strncpy(filter[*n_filt].type, type, 3);
+	filter[*n_filt].biquad_w[0][0] = 0;
+	filter[*n_filt].biquad_w[0][1] = 0;
+	filter[*n_filt].biquad_w[1][0] = 0;
+	filter[*n_filt].biquad_w[1][1] = 0;
+	filter[*n_filt].channel = channel;
+	// filter[*n_filt].coeffs_calculated = false;
+	// (*n_filt)++;
 }
 
 __attribute__((optimize("O2"))) void filters_calc_coeff(filter_config_t *filter, u8_t *n_filt, u32_t sample_rate) {
@@ -310,6 +355,14 @@ __attribute__((optimize("O2"))) void filters_calc_coeff(filter_config_t *filter,
 		{
 			dsps_biquad_gen_hpf_f32(filter[i].biquad_coeffs, filter[i].frequency/(float)sample_rate, filter[i].q);
 		}
+		else if (strcmp(filter[i].type, "L1") == 0) // Low pass, 1st order
+		{
+			equlizer_biquad_gen_lpf1_f32(filter[i].biquad_coeffs, filter[i].frequency, (float)sample_rate);
+		} 
+		else if (strcmp(filter[i].type, "H1") == 0) // High pass, 1st order
+		{
+			equlizer_biquad_gen_hpf1_f32(filter[i].biquad_coeffs, filter[i].frequency, (float)sample_rate);
+		}
 		else if (strcmp(filter[i].type, "LS") == 0) // Low shelf
 		{
 			dsps_biquad_gen_lowShelf_f32(filter[i].biquad_coeffs, filter[i].frequency/(float)sample_rate, filter[i].gain, filter[i].q);
@@ -326,20 +379,28 @@ __attribute__((optimize("O2"))) void filters_calc_coeff(filter_config_t *filter,
 		{
 			dsps_biquad_gen_allpass360_f32(filter[i].biquad_coeffs, filter[i].frequency/(float)sample_rate, filter[i].q);
 		}
+		else if (strcmp(filter[i].type, "GA") == 0) // Gain only
+		{
+			float gain_linear = powf(10, filter[i].gain/20);
+			filter[i].biquad_coeffs[0] = 1.0/gain_linear;
+			filter[i].biquad_coeffs[1] = 0;
+			filter[i].biquad_coeffs[2] = 0;
+			filter[i].biquad_coeffs[3] = 0;
+			filter[i].biquad_coeffs[4] = 0;
+
+		}
 		else /* Set to flat: */
 		{
 			filter[i].biquad_coeffs[0] = 1;
-			filter[i].biquad_coeffs[1] = -2;
-			filter[i].biquad_coeffs[2] = 1;
-			filter[i].biquad_coeffs[3] = -2;
-			filter[i].biquad_coeffs[4] = 1;
+			filter[i].biquad_coeffs[1] = 0;
+			filter[i].biquad_coeffs[2] = 0;
+			filter[i].biquad_coeffs[3] = 0;
+			filter[i].biquad_coeffs[4] = 0;
 			LOG_WARN("Flat filter");
 
 		}
 	}
 }
-
-
 
 /****************************************************************************************
  * 
@@ -358,6 +419,25 @@ int equalizer_get_config_value_int(char *config_name) {
 	}
 	return config_val;
 }
+
+/****************************************************************************************
+ * 
+ */
+int equalizer_get_config_value_float(char *config_name) {
+	float config_val = 0;
+	char* config = config_alloc_get_default(NVS_TYPE_STR, config_name, "0.0", 0);
+	if (!config) {
+		LOG_WARN("%s Config not found", config_name);
+	}
+	else {
+		
+		config_val = atoff(config);
+		LOG_INFO("equalizer_get_config_value_float %s: %d", config_name, config_val);
+		free(config);
+	}
+	return config_val;
+}
+
 /****************************************************************************************
  * update equalizer gain
  */
@@ -372,11 +452,17 @@ void equalizer_update(s8_t* gain) {
 	config_set_value(NVS_TYPE_STR, "equalizer", config);
 	equalizer_apply_loudness();
 	equalizer_calc_real_gains();
-	// filters_reset(eq_filters, &n_eq_filters);
+
 	filters_reset(eq_filters, &n_eq_filters, EQ_BANDS);
 	for (int i = 0; i < EQ_BANDS; i++) {
 		if (equalizer.real_gain[i] != 0.0) {
 			filters_add(eq_filters, &n_eq_filters, "PK", eq_taps[i], equalizer.real_gain[i], EQ_Q, BOTH);
+			// filters_set(eq_filters, i, "PK", eq_taps[i], equalizer.real_gain[i], EQ_Q, BOTH);
+			// eq_filters[i].frequency = eq_taps[i];
+			// eq_filters[i].gain = equalizer.real_gain[i];
+			// eq_filters[i].q = EQ_Q;
+			// strncpy(eq_filters[i].type, "PK", 3);
+			// eq_filters[i].channel = BOTH;
 		}
 	}
 	// equalizer.update = true;
@@ -410,9 +496,13 @@ void equalizer_update(s8_t* gain) {
  */
 void equalizer_init(void) {
 	s8_t* pGains = equalizer_get_config();
+	filters_reset(eq_filters, &n_eq_filters, EQ_BANDS);
+	n_eq_filters = EQ_BANDS;
+
 	equalizer_update(pGains);
 	arb_filters_get_config("filter_json");
 	channel_filter_get_config();
+	delay_get_config();
 	// equalizer_two_way_update();
 	
 	// filters_calc_coeff(eq_filters, &n_eq_filters, 48000);
@@ -518,17 +608,17 @@ float* calculate_loudness_curve(float volume_level) {
  * Combine Loudness and user EQ settings and apply them
  */
 void equalizer_apply_loudness() {
-	s8_t* pGains = equalizer_get_config();
+	// s8_t* pGains = equalizer_get_config();
 	// filter_get_config("filter_json");
 	// equalizer_two_way_update();
 	float* loudness_curve = calculate_loudness_curve(adjusted_gain);
 	for (int i = 0; i < EQ_BANDS; i++) {
-		equalizer.gain[i] = (float)(loudness_curve[i] + (float)pGains[i]);
+		equalizer.gain[i] = (loudness_curve[i] + equalizer.gain[i]);
 	}
 	equalizer_print_bands("Combined Loudness: ", equalizer.gain, EQ_BANDS);
 	
 	free(loudness_curve);
-	free(pGains);
+	// free(pGains);
 	// equalizer.update = true;
 }
 
@@ -642,8 +732,22 @@ __attribute__((optimize("O2"))) void filter_all(struct buffer *outputbuf, frames
 
 	float temp;
 	while (count--) {
-		temp = (float)*ptr;
+		// Apply delay
+		if (channel == channel_delay_channel) {
+			channel_delay_buffer[channel_delay_buffer_pos] = *ptr;
+			channel_delay_buffer_pos++;
+			channel_delay_buffer_read_pos = channel_delay_buffer_pos;
+			if (channel_delay_buffer_pos > channel_delay) {
+				channel_delay_buffer_pos = 0;
+			}
+			if (channel_delay_buffer_read_pos > channel_delay) {
+				channel_delay_buffer_read_pos = 0;
+			}
+			*ptr = channel_delay_buffer[(channel_delay_buffer_pos+1) % channel_delay];
+		}
 
+		// Apply filters
+		temp = (float)*ptr;
 		for (int i = 0; i < n_eq_filters; i++)
 		{
 			filter_biquad_i16(&temp, eq_filters[i].biquad_coeffs, eq_filters[i].biquad_w[channel]);
@@ -664,7 +768,6 @@ __attribute__((optimize("O2"))) void filter_all(struct buffer *outputbuf, frames
 		*ptr = (ISAMPLE_T)temp;
 		ptr += 2;
     }
-
 }
 
 __attribute__((optimize("O2"))) inline void filter_biquad_i16(float *val, float *coef, float *w) 
@@ -758,3 +861,53 @@ __attribute__((optimize("O2"))) void equlizer_biquad_gen_peakingEQ_f32(float *co
     coeffs[3] = a1 / a0;
     coeffs[4] = a2 / a0;
 }
+
+
+/****************************************************************************************
+ * First order low pass filter, matching Virtuix CAD 2
+ */
+__attribute__((optimize("O2"))) void equlizer_biquad_gen_lpf1_f32(float *coeffs, float f, float Fs)
+{
+    float w0 = 2 * M_PI * f / Fs;
+	float K = tanf(w0);
+	float alpha = 1 + K;
+
+    float b0 = K / alpha;
+    float b1 = b0;
+    float b2 = 0;
+    float a0 = 1;
+    float a1 = -(1 - K) / alpha;
+    float a2 = 0;
+
+    coeffs[0] = b0 / a0;
+    coeffs[1] = b1 / a0;
+    coeffs[2] = b2 / a0;
+    coeffs[3] = a1 / a0;
+    coeffs[4] = a2 / a0;
+}
+
+/****************************************************************************************
+ * First order high pass filter, matching Virtuix CAD 2
+ */
+__attribute__((optimize("O2"))) void equlizer_biquad_gen_hpf1_f32(float *coeffs, float f, float Fs)
+{
+    float w0 = 2 * M_PI * f / Fs;
+	float K = tanf(w0);
+	float alpha = 1 + K;
+
+    float b0 = 1 - K / alpha;
+    float b1 = -b0;
+    float b2 = 0;
+    float a0 = 1;
+    float a1 = -(1 - K) / alpha;
+    float a2 = 0;
+
+    coeffs[0] = b0 / a0;
+    coeffs[1] = b1 / a0;
+    coeffs[2] = b2 / a0;
+    coeffs[3] = a1 / a0;
+    coeffs[4] = a2 / a0;
+}
+
+
+

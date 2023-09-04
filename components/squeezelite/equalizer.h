@@ -46,6 +46,7 @@ void equalizer_apply_loudness();
 void filters_reset(filter_config_t *filter, u8_t *n_filt, u8_t max_filters);
 void filters_add(filter_config_t *filter, u8_t *n_filt, char *type, float freq, float gain, float q, channel_t channel);
 int equalizer_get_config_value_int(char *config_name);
+int equalizer_get_config_value_float(char *config_name);
 
 // void equlizer_biquad_i16(struct buffer *outputbuf, frames_t count, int channel);
 // void apply_biquad(struct buffer *outputbuf, frames_t count);
@@ -54,4 +55,6 @@ void apply_filters(struct buffer *outputbuf, frames_t count);
 void filter_all(struct buffer *outputbuf, frames_t count, u8_t channel);
 void filter_biquad_i16(float *val, float *coef, float *w);
 void equlizer_biquad_gen_peakingEQ_f32(float *coeffs, float f, float Fs, float qFactor, float gain);
+void equlizer_biquad_gen_lpf1_f32(float *coeffs, float f, float Fs);
+void equlizer_biquad_gen_hpf1_f32(float *coeffs, float f, float Fs);
 void equalizer_calc_real_gains();
