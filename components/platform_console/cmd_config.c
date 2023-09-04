@@ -144,7 +144,8 @@ static struct {
 	struct arg_int *gain_right;
 	struct arg_int *eq_lpf_freq;
 	struct arg_int *eq_hpf_freq;
-
+	struct arg_str *filters_left;
+	struct arg_str *filters_right;
     struct arg_end *end;
 } audio_args;
 static struct {
@@ -498,13 +499,42 @@ static int do_audio_cmd(int argc, char **argv){
     }
 
 	if (audio_args.filter_json->count>0) {
-		// TODO: error checking
-		err = config_set_value(NVS_TYPE_STR, "filter_json", audio_args.filter_json->sval[0]);
-		fprintf(f,"filter_json changed to %s\n",audio_args.filter_json->sval[0]);
+		char* p = strtok(audio_args.filter_json->sval[0], ", !");
+		uint8_t num_entries = 0;
+		while( p != NULL ) {
+			num_entries++;
+			p = strtok(NULL, ", :");
+		}
+		if (((num_entries % 4) != 0) || (num_entries > 10*4)) {
+			fprintf(f,"Invalid filter_json config, number of entries: %d \n", num_entries);
+		} else {
+			err = config_set_value(NVS_TYPE_STR, "filter_json", audio_args.filter_json->sval[0]);
+			fprintf(f,"filter_json changed to %s\n",audio_args.filter_json->sval[0]);
+		}
+		free(p);
 	} else {
 		err = config_set_value(NVS_TYPE_STR, "filter_json", "");
-		fprintf(f,"filter_json cleared\n");
+		fprintf(f,"filter_json cleared\n"); 
 	}
+
+	if (audio_args.filters_left->count>0) {
+		// TODO: error checking
+		err = config_set_value(NVS_TYPE_STR, "filters_left", audio_args.filters_left->sval[0]);
+		fprintf(f,"filters_left changed to %s\n",audio_args.filters_left->sval[0]);
+	} else {
+		err = config_set_value(NVS_TYPE_STR, "filters_left", "");
+		fprintf(f,"filters_left cleared\n");
+	}
+
+	if (audio_args.filters_right->count>0) {
+		// TODO: error checking
+		err = config_set_value(NVS_TYPE_STR, "filters_right", audio_args.filters_right->sval[0]);
+		fprintf(f,"filters_right changed to %s\n",audio_args.filters_right->sval[0]);
+	} else {
+		err = config_set_value(NVS_TYPE_STR, "filters_right", "");
+		fprintf(f,"filters_right cleared\n");
+	}
+
 	// if(audio_args.eq_left->count>0){
     //     err = ESP_OK; // suppress any error code that might have happened in a previous step
 	// 	char * config = strdup_psram(audio_args.eq_left->sval[0]);
@@ -1552,7 +1582,8 @@ static void register_audio_config(void){
 	audio_args.eq_lpf_freq = arg_int0(NULL, "eq_lpf_freq","0-20000","Low pass filter frequency for the right (low) channel. 0 turns it off.");
 	audio_args.gain_left = arg_int0(NULL, "gain_left","-100-100","Gain for the left (high) channel in dB/10.");
 	audio_args.gain_right = arg_int0(NULL, "gain_right","-100-100","Delay for the right (low) channel in dB/10.");
-	// audio_args.filter_json = arg_str0(NULL,"filters_left","[Type],[Frequency],[Gain],[Q]","JSON for IIR filtering ex. [Type],[Frequency],[Gain],[Q],[Type],[Frequency],[Gain],[Q] etc, avaliable types: PK, LP, HP, LS, HS, NO, AP, GA, L1, H1");
+	audio_args.filters_left = arg_str0(NULL,"filters_left","[Type],[Frequency],[Gain],[Q]","Filters for the left (high) channel, ex. [Type],[Frequency],[Gain],[Q],[Type],[Frequency],[Gain],[Q] etc, avaliable types: PK, LP, HP, LS, HS, NO, AP, GA, L1, H1");
+	audio_args.filters_right = arg_str0(NULL,"filters_right","[Type],[Frequency],[Gain],[Q]","Filters for the right (low) channel, ex. [Type],[Frequency],[Gain],[Q],[Type],[Frequency],[Gain],[Q] etc, avaliable types: PK, LP, HP, LS, HS, NO, AP, GA, L1, H1");
 	audio_args.delay_left = arg_int0(NULL, "delay_left","0-1000","Delay for the left (high) channel in us (3 us equals 1mm).");
 	audio_args.delay_right = arg_int0(NULL, "delay_right","0-1000","Delay for the right (low) channel in us (3 us equals 1mm).");
 	audio_args.end = arg_end(6);
