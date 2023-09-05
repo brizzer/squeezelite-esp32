@@ -109,7 +109,7 @@ u8_t n_arb_filters = 0;
 u8_t n_eq_filters = 0;
 u8_t n_channel_filters = 0;
 
-#define N_CLOCK_CYCLES_AVERAGE 20
+#define N_CLOCK_CYCLES_AVERAGE 100
 u8_t n_clock_cycles_run = 0;
 float total_clock_cycles = 0.0;
 unsigned int n_clock_cycles_samples = 0;
@@ -706,7 +706,8 @@ __attribute__((optimize("O2"))) void apply_filters(struct buffer *outputbuf, fra
 	total_clock_cycles += end_cc - start_cc;
 	n_clock_cycles_samples += count;
 	if (n_clock_cycles_run > N_CLOCK_CYCLES_AVERAGE) {
-		LOG_DEBUG("Apply filter cycles per sample:,%f,len,%d,n_eq,%d,n_arb,%d,n_channel,%d", total_clock_cycles/n_clock_cycles_samples, n_clock_cycles_samples, n_eq_filters, n_arb_filters, n_channel_filters);
+		//LOG_DEBUG("Apply filter cycles per sample:,%f,len,%d,n_eq,%d,n_arb,%d,n_channel,%d", total_clock_cycles/n_clock_cycles_samples, n_clock_cycles_samples, n_eq_filters, n_arb_filters, n_channel_filters);
+		LOG_DEBUG("Apply filter cycles per sample, len, n_eq, n_arb, n_channel, %f, %d, %d, %d, %d", total_clock_cycles/n_clock_cycles_samples, n_clock_cycles_samples, n_eq_filters, n_arb_filters, n_channel_filters);
 		total_clock_cycles = 0.0;
 		n_clock_cycles_run = 0;
 		n_clock_cycles_samples = 0;
