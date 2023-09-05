@@ -16,6 +16,9 @@
 // #include "dsps_biquad.h"
 #include "dsps_biquad_gen.h"
 
+#pragma GCC push_options
+#pragma GCC optimize ("-O2")
+
 #define EQ_BANDS 10
 #define MAX_ARB_FILTERS 10
 #define MAX_CHANNEL_FILERS 5
@@ -24,10 +27,11 @@
 #define EQ_Q 1.0
 #define CHANNEL_DELAY_BUFFER_SIZE 100 // 100us at 96kHz
 
-static log_level loglevel = lWARN; //lDEBUG; //lINFO;
+static log_level loglevel = lDEBUG; //lINFO;lWARN;
 float loudness_factor = 0;
 float adjusted_gain = 0;
 float biquad_d0;
+float temp_val;
 
 #define POLYNOME_COUNT 6
 static const float loudness_envelope_coefficients[EQ_BANDS][POLYNOME_COUNT] =
@@ -63,15 +67,15 @@ static const float loudness_envelope_coefficients[EQ_BANDS][POLYNOME_COUNT] =
   -8.2777185209388079e-006, 3.1352890650784970e-008} };
 
 // float biquad_eq_coefficients[2][EQ_BANDS][5];
-float biquad_eq_coefficients[EQ_BANDS][5];
-float biquad_eq_w[2][EQ_BANDS][2] = {0};
+// float biquad_eq_coefficients[EQ_BANDS][5];
+// float biquad_eq_w[2][EQ_BANDS][2] = {0};
 
-float biquad_lpf_coeffs[5];
-float biquad_lpf_w[2] = {0};
+// float biquad_lpf_coeffs[5];
+// float biquad_lpf_w[2] = {0};
 bool biquad_lpf_process = false;
 
-float biquad_hpf_coeffs[5];
-float biquad_hpf_w[2] = {0};
+// float biquad_hpf_coeffs[5];
+// float biquad_hpf_w[2] = {0};
 bool biquad_hpf_process = false;
 
 float eq_taps[EQ_BANDS] = {31,62,125,250,500,1000,2000,4000,8000,16000};
@@ -105,9 +109,14 @@ u8_t n_arb_filters = 0;
 u8_t n_eq_filters = 0;
 u8_t n_channel_filters = 0;
 
+#define N_CLOCK_CYCLES_AVERAGE 20
+u8_t n_clock_cycles_run = 0;
+float total_clock_cycles = 0.0;
+unsigned int n_clock_cycles_samples = 0;
 
 
-bool equalizer_active = false;
+
+// bool equalizer_active = false;
 
 // static const char * TAG = "audio controls";
 
@@ -313,7 +322,7 @@ void filters_add(filter_config_t *filter, u8_t *n_filt, char *type, float freq, 
 	filter[*n_filt].frequency = freq;
 	filter[*n_filt].gain = gain;
 	filter[*n_filt].q = q;
-	strncpy(filter[*n_filt].type, type, 3);
+	strncpy(filter[*n_filt].type, type, 2);
 	filter[*n_filt].biquad_w[0][0] = 0;
 	filter[*n_filt].biquad_w[0][1] = 0;
 	filter[*n_filt].biquad_w[1][0] = 0;
@@ -327,7 +336,7 @@ void filters_set(filter_config_t *filter, u8_t *n_filt, char *type, float freq, 
 	filter[*n_filt].frequency = freq;
 	filter[*n_filt].gain = gain;
 	filter[*n_filt].q = q;
-	strncpy(filter[*n_filt].type, type, 3);
+	strncpy(filter[*n_filt].type, type, 2);
 	filter[*n_filt].biquad_w[0][0] = 0;
 	filter[*n_filt].biquad_w[0][1] = 0;
 	filter[*n_filt].biquad_w[1][0] = 0;
@@ -397,8 +406,8 @@ __attribute__((optimize("O2"))) void filters_calc_coeff(filter_config_t *filter,
 			filter[i].biquad_coeffs[3] = 0;
 			filter[i].biquad_coeffs[4] = 0;
 			LOG_WARN("Flat filter");
-
 		}
+		// TODO: negate the last two coeffs
 	}
 }
 
@@ -600,7 +609,10 @@ float* calculate_loudness_curve(float volume_level) {
 		}
 		loudness_curve[i] *= loudness_factor;
 	}
+	if (loglevel >= lDEBUG) {
 	equalizer_print_bands("calculated Loudness: ", loudness_curve, EQ_BANDS);
+	}
+	
 	return loudness_curve;
 }
 
@@ -682,9 +694,23 @@ void equalizer_set_loudness(unsigned int left, unsigned int right) {
 	equalizer_apply_loudness();
 }
 
-void apply_filters(struct buffer *outputbuf, frames_t count) {
+__attribute__((optimize("O2"))) void apply_filters(struct buffer *outputbuf, frames_t count) {
+	// #if loglevel >= lDEBUG
+	unsigned int start_cc = xthal_get_ccount();
+	// #endif
 	filter_all(outputbuf, count, 0);
 	filter_all(outputbuf, count, 1);
+	// #if loglevel >= lDEBUG
+	unsigned int end_cc = xthal_get_ccount();
+	n_clock_cycles_run++;
+	total_clock_cycles += end_cc - start_cc;
+	n_clock_cycles_samples += count;
+	if (n_clock_cycles_run > N_CLOCK_CYCLES_AVERAGE) {
+		LOG_DEBUG("Apply filter cycles per sample:,%f,len,%d,n_eq,%d,n_arb,%d,n_channel,%d", total_clock_cycles/n_clock_cycles_samples, n_clock_cycles_samples, n_eq_filters, n_arb_filters, n_channel_filters);
+		total_clock_cycles = 0.0;
+		n_clock_cycles_run = 0;
+		n_clock_cycles_samples = 0;
+	}
 }
 
 // void apply_biquad(struct buffer *outputbuf, frames_t count) {
@@ -730,7 +756,7 @@ __attribute__((optimize("O2"))) void filter_all(struct buffer *outputbuf, frames
 
 	ISAMPLE_T *ptr = (ISAMPLE_T *)(void *)outputbuf->readp + channel;
 
-	float temp;
+	
 	while (count--) {
 		// Apply delay
 		if (channel == channel_delay_channel) {
@@ -747,25 +773,28 @@ __attribute__((optimize("O2"))) void filter_all(struct buffer *outputbuf, frames
 		}
 
 		// Apply filters
-		temp = (float)*ptr;
+		temp_val = (float)*ptr;
 		for (int i = 0; i < n_eq_filters; i++)
 		{
-			filter_biquad_i16(&temp, eq_filters[i].biquad_coeffs, eq_filters[i].biquad_w[channel]);
+			filter_biquad_i16(&temp_val, eq_filters[i].biquad_coeffs, eq_filters[i].biquad_w[channel]);
+			// equalizer_biquad_f32(&temp_val, eq_filters[i].biquad_coeffs, eq_filters[i].biquad_w[channel]);
 		}
 		for (int i = 0; i < n_arb_filters; i++)
 		{
-			filter_biquad_i16(&temp, arb_filters[i].biquad_coeffs, arb_filters[i].biquad_w[channel]);
+			filter_biquad_i16(&temp_val, arb_filters[i].biquad_coeffs, arb_filters[i].biquad_w[channel]);
+			// equalizer_biquad_f32(&temp_val, arb_filters[i].biquad_coeffs, arb_filters[i].biquad_w[channel]);
 		}
 		for (int i = 0; i < n_channel_filters; i++)
 		{
 			if (channel_filters[i].channel == channel) {
-				filter_biquad_i16(&temp, channel_filters[i].biquad_coeffs, channel_filters[i].biquad_w[channel]);
+				filter_biquad_i16(&temp_val, channel_filters[i].biquad_coeffs, channel_filters[i].biquad_w[channel]);
+				// equalizer_biquad_f32(&temp_val, channel_filters[i].biquad_coeffs, channel_filters[i].biquad_w[channel]);
 			}
 			
 		}
 		// TODO: apply gain
 
-		*ptr = (ISAMPLE_T)temp;
+		*ptr = (ISAMPLE_T)temp_val;
 		ptr += 2;
     }
 }
@@ -773,7 +802,7 @@ __attribute__((optimize("O2"))) void filter_all(struct buffer *outputbuf, frames
 __attribute__((optimize("O2"))) inline void filter_biquad_i16(float *val, float *coef, float *w) 
 {
         biquad_d0 = *val - coef[3] * w[0] - coef[4] * w[1];
-		*val = (ISAMPLE_T)(coef[0] * biquad_d0 + coef[1] * w[0] + coef[2] * w[1]);
+		*val = coef[0] * biquad_d0 + coef[1] * w[0] + coef[2] * w[1];
         w[1] = w[0];
         w[0] = biquad_d0;
 }
@@ -910,4 +939,4 @@ __attribute__((optimize("O2"))) void equlizer_biquad_gen_hpf1_f32(float *coeffs,
 }
 
 
-
+#pragma GCC pop_options

@@ -58,3 +58,4 @@ void equlizer_biquad_gen_peakingEQ_f32(float *coeffs, float f, float Fs, float q
 void equlizer_biquad_gen_lpf1_f32(float *coeffs, float f, float Fs);
 void equlizer_biquad_gen_hpf1_f32(float *coeffs, float f, float Fs);
 void equalizer_calc_real_gains();
+esp_err_t equalizer_biquad_f32(float *val, float *coef, float *w);
