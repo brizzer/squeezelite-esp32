@@ -95,9 +95,8 @@ static struct {
 
 u16_t channel_delay = 0;
 channel_t channel_delay_channel = BOTH;
-ISAMPLE_T channel_delay_buffer[CHANNEL_DELAY_BUFFER_SIZE];
+ISAMPLE_T channel_delay_buffer[CHANNEL_DELAY_BUFFER_SIZE] = {0};
 u16_t channel_delay_buffer_pos = 0;
-u16_t channel_delay_buffer_read_pos = 0;
 
 float channel_gain[2];
 
@@ -215,7 +214,7 @@ s8_t* equalizer_get_config(void) {
 /****************************************************************************************
  * Get channel filter config
  */
-void delay_get_config() {
+void delay_get_config(u32_t sample_rate) {
 
 	u16_t delay_left = equalizer_get_config_value_int("delay_left");
 	u16_t delay_right = equalizer_get_config_value_float("delay_right");
@@ -224,13 +223,15 @@ void delay_get_config() {
 	channel_delay = 0;
 
 	if (delay_left > delay_right) {
-		channel_delay = delay_left - delay_right;
+		channel_delay = (u16_t)((float)(delay_left - delay_right) * (float)sample_rate / 1e6);
 		channel_delay_channel = LEFT;
 	} 
 	if (delay_right > delay_left) {
-		channel_delay = delay_right - delay_left;
+		channel_delay = (u16_t)((float)(delay_right - delay_left) * (float)sample_rate / 1e6);
 		channel_delay_channel = RIGHT;
 	} 
+
+	memset(channel_delay_buffer, 0x00, CHANNEL_DELAY_BUFFER_SIZE * sizeof(s16_t));
 
 }
 
@@ -385,7 +386,7 @@ __attribute__((optimize("O2"))) void filters_calc_coeff(filter_config_t *filter,
 		else if (strcmp(filter[i].type, "GA") == 0) // Gain only
 		{
 			float gain_linear = powf(10, filter[i].gain/20);
-			filter[i].biquad_coeffs[0] = 1.0/gain_linear;
+			filter[i].biquad_coeffs[0] = gain_linear;
 			filter[i].biquad_coeffs[1] = 0;
 			filter[i].biquad_coeffs[2] = 0;
 			filter[i].biquad_coeffs[3] = 0;
@@ -508,7 +509,7 @@ void equalizer_init(void) {
 	filters_get_config("filters_left", channel_filters, &n_channel_filters, MAX_CHANNEL_FILERS, LEFT, true);
 	filters_get_config("filters_right", channel_filters, &n_channel_filters, MAX_CHANNEL_FILERS, RIGHT, false);
 	// channel_filter_get_config();
-	delay_get_config();
+	delay_get_config(44100);
 	// equalizer_two_way_update();
 	
 	// filters_calc_coeff(eq_filters, &n_eq_filters, 48000);
@@ -543,7 +544,7 @@ void equalizer_open(u32_t sample_rate) {
 	filters_calc_coeff(eq_filters, &n_eq_filters, sample_rate);
 	filters_calc_coeff(arb_filters, &n_arb_filters, sample_rate);
 	filters_calc_coeff(channel_filters, &n_channel_filters, sample_rate);
-
+	delay_get_config(sample_rate);
 	// if (equalizer.handle) {
 		// bool active = false;
 
@@ -760,12 +761,8 @@ __attribute__((optimize("O2"))) void filter_all(struct buffer *outputbuf, frames
 		if (channel == channel_delay_channel) {
 			channel_delay_buffer[channel_delay_buffer_pos] = *ptr;
 			channel_delay_buffer_pos++;
-			channel_delay_buffer_read_pos = channel_delay_buffer_pos;
 			if (channel_delay_buffer_pos > channel_delay) {
 				channel_delay_buffer_pos = 0;
-			}
-			if (channel_delay_buffer_read_pos > channel_delay) {
-				channel_delay_buffer_read_pos = 0;
 			}
 			*ptr = channel_delay_buffer[(channel_delay_buffer_pos+1) % channel_delay];
 		}
