@@ -140,10 +140,10 @@ static struct {
 	// struct arg_str *eq_right;
 	struct arg_int *delay_left;
 	struct arg_int *delay_right;
-	struct arg_int *gain_left;
-	struct arg_int *gain_right;
-	struct arg_int *eq_lpf_freq;
-	struct arg_int *eq_hpf_freq;
+	// struct arg_int *gain_left;
+	// struct arg_int *gain_right;
+	// struct arg_int *eq_lpf_freq;
+	// struct arg_int *eq_hpf_freq;
 	struct arg_str *filters_left;
 	struct arg_str *filters_right;
     struct arg_end *end;
@@ -499,19 +499,34 @@ static int do_audio_cmd(int argc, char **argv){
     }
 
 	if (audio_args.filter_json->count>0) {
-		char* p = strtok(audio_args.filter_json->sval[0], ", !");
+
+		// char* p = strtok(audio_args.filter_json->sval[0], ", !");
+		char* filters;
+    	filters = strdup(audio_args.filter_json->sval[0]);
+		char *rest = NULL;
+		char *token;
 		uint8_t num_entries = 0;
-		while( p != NULL ) {
+		for (token = strtok_r(filters, ", ;", &rest); token != NULL; token = strtok_r(NULL, ", ;", &rest)) {   
 			num_entries++;
-			p = strtok(NULL, ", :");
+			// fprintf(f,"Token: %s \n", token);
 		}
+		free(filters);
+		free(rest);
+		free(token);
+
+		// char* p = strtok(audio_args.filter_json->sval[0], ", !");
+		// uint8_t num_entries = 0;
+		// while( p != NULL ) {
+		// 	num_entries++;
+		// 	p = strtok(NULL, ", :");
+		// }
 		if (((num_entries % 4) != 0) || (num_entries > 10*4)) {
 			fprintf(f,"Invalid filter_json config, number of entries: %d \n", num_entries);
 		} else {
 			err = config_set_value(NVS_TYPE_STR, "filter_json", audio_args.filter_json->sval[0]);
 			fprintf(f,"filter_json changed to %s\n",audio_args.filter_json->sval[0]);
 		}
-		free(p);
+		// free(p);
 	} else {
 		err = config_set_value(NVS_TYPE_STR, "filter_json", "");
 		fprintf(f,"filter_json cleared\n"); 
@@ -629,87 +644,87 @@ static int do_audio_cmd(int argc, char **argv){
         }
 	}
 
-	if(audio_args.gain_left->count>0){
-		char p[4]={0};
-		int gain_left_val = audio_args.gain_left->ival[0];
-		if( gain_left_val < -100 || gain_left_val>100){
-			nerrors++;
-            fprintf(f,"Invalid gain_left value %d. Valid values are between -100 and 100.\n",gain_left_val);
-		}
-		else {
-			itoa(gain_left_val,p,10);
-			err = config_set_value(NVS_TYPE_STR, "gain_left", p);
-		}
-        if(err!=ESP_OK){
-            nerrors++;
-            fprintf(f,"Error setting gain_left value %s. %s\n",p, esp_err_to_name(err));
-        }
-        else {
-            fprintf(f,"Gain left changed to %s\n",p);
-        }
-	}
+	// if(audio_args.gain_left->count>0){
+	// 	char p[4]={0};
+	// 	int gain_left_val = audio_args.gain_left->ival[0];
+	// 	if( gain_left_val < -100 || gain_left_val>100){
+	// 		nerrors++;
+    //         fprintf(f,"Invalid gain_left value %d. Valid values are between -100 and 100.\n",gain_left_val);
+	// 	}
+	// 	else {
+	// 		itoa(gain_left_val,p,10);
+	// 		err = config_set_value(NVS_TYPE_STR, "gain_left", p);
+	// 	}
+    //     if(err!=ESP_OK){
+    //         nerrors++;
+    //         fprintf(f,"Error setting gain_left value %s. %s\n",p, esp_err_to_name(err));
+    //     }
+    //     else {
+    //         fprintf(f,"Gain left changed to %s\n",p);
+    //     }
+	// }
 
-	if(audio_args.gain_right->count>0){
-		char p[4]={0};
-		int gain_right_val = audio_args.gain_right->ival[0];
-		if( gain_right_val < -100 || gain_right_val>100){
-			nerrors++;
-            fprintf(f,"Invalid gain_right value %d. Valid values are between -100 and 100.\n",gain_right_val);
-		}
-		else {
-			itoa(gain_right_val,p,10);
-			err = config_set_value(NVS_TYPE_STR, "gain_right", p);
-		}
-        if(err!=ESP_OK){
-            nerrors++;
-            fprintf(f,"Error setting gain_right value %s. %s\n",p, esp_err_to_name(err));
-        }
-        else {
-            fprintf(f,"Gain right changed to %s\n",p);
-        }
-	}
+	// if(audio_args.gain_right->count>0){
+	// 	char p[4]={0};
+	// 	int gain_right_val = audio_args.gain_right->ival[0];
+	// 	if( gain_right_val < -100 || gain_right_val>100){
+	// 		nerrors++;
+    //         fprintf(f,"Invalid gain_right value %d. Valid values are between -100 and 100.\n",gain_right_val);
+	// 	}
+	// 	else {
+	// 		itoa(gain_right_val,p,10);
+	// 		err = config_set_value(NVS_TYPE_STR, "gain_right", p);
+	// 	}
+    //     if(err!=ESP_OK){
+    //         nerrors++;
+    //         fprintf(f,"Error setting gain_right value %s. %s\n",p, esp_err_to_name(err));
+    //     }
+    //     else {
+    //         fprintf(f,"Gain right changed to %s\n",p);
+    //     }
+	// }
 
-	if(audio_args.eq_lpf_freq->count>0){
-		char p[4]={0};
-		int lpf_freq_val = audio_args.eq_lpf_freq->ival[0];
-		if( lpf_freq_val < 0 || lpf_freq_val>20000){
-			nerrors++;
-            fprintf(f,"Invalid eq_lpf_freq value %d. Valid values are between 0 and 20000.\n",lpf_freq_val);
-		}
-		else {
-			itoa(lpf_freq_val,p,10);
-			err = config_set_value(NVS_TYPE_STR, "eq_lpf_freq", p);
-		}
-        if(err!=ESP_OK){
-            nerrors++;
-            fprintf(f,"Error setting eq_lpf_freq value %s. %s\n",p, esp_err_to_name(err));
-        }
-        else {
-            fprintf(f,"eq_lpf_freq changed to %s\n",p);
-			// TODO: apply delay
-        }
-	}
+	// if(audio_args.eq_lpf_freq->count>0){
+	// 	char p[4]={0};
+	// 	int lpf_freq_val = audio_args.eq_lpf_freq->ival[0];
+	// 	if( lpf_freq_val < 0 || lpf_freq_val>20000){
+	// 		nerrors++;
+    //         fprintf(f,"Invalid eq_lpf_freq value %d. Valid values are between 0 and 20000.\n",lpf_freq_val);
+	// 	}
+	// 	else {
+	// 		itoa(lpf_freq_val,p,10);
+	// 		err = config_set_value(NVS_TYPE_STR, "eq_lpf_freq", p);
+	// 	}
+    //     if(err!=ESP_OK){
+    //         nerrors++;
+    //         fprintf(f,"Error setting eq_lpf_freq value %s. %s\n",p, esp_err_to_name(err));
+    //     }
+    //     else {
+    //         fprintf(f,"eq_lpf_freq changed to %s\n",p);
+	// 		// TODO: apply delay
+    //     }
+	// }
 
-	if(audio_args.eq_hpf_freq->count>0){
-		char p[4]={0};
-		int hpf_freq_val = audio_args.eq_hpf_freq->ival[0];
-		if( hpf_freq_val < 0 || hpf_freq_val>20000){
-			nerrors++;
-            fprintf(f,"Invalid eq_hpf_freq value %d. Valid values are between 0 and 20000.\n",hpf_freq_val);
-		}
-		else {
-			itoa(hpf_freq_val,p,10);
-			err = config_set_value(NVS_TYPE_STR, "eq_hpf_freq", p);
-		}
-        if(err!=ESP_OK){
-            nerrors++;
-            fprintf(f,"Error setting eq_hpf_freq value %s. %s\n",p, esp_err_to_name(err));
-        }
-        else {
-            fprintf(f,"eq_hpf_freq changed to %s\n",p);
-			// TODO: apply delay
-        }
-	}
+	// if(audio_args.eq_hpf_freq->count>0){
+	// 	char p[4]={0};
+	// 	int hpf_freq_val = audio_args.eq_hpf_freq->ival[0];
+	// 	if( hpf_freq_val < 0 || hpf_freq_val>20000){
+	// 		nerrors++;
+    //         fprintf(f,"Invalid eq_hpf_freq value %d. Valid values are between 0 and 20000.\n",hpf_freq_val);
+	// 	}
+	// 	else {
+	// 		itoa(hpf_freq_val,p,10);
+	// 		err = config_set_value(NVS_TYPE_STR, "eq_hpf_freq", p);
+	// 	}
+    //     if(err!=ESP_OK){
+    //         nerrors++;
+    //         fprintf(f,"Error setting eq_hpf_freq value %s. %s\n",p, esp_err_to_name(err));
+    //     }
+    //     else {
+    //         fprintf(f,"eq_hpf_freq changed to %s\n",p);
+	// 		// TODO: apply delay
+    //     }
+	// }
 
 	// int8_t two_way_speaker = audio_args.two_way_speaker->count>0;
 	// err = config_set_value(NVS_TYPE_I8, "two_way_speaker", &two_way_speaker);
@@ -1137,17 +1152,24 @@ cJSON * audio_cb(){
 	// p = config_alloc_get_default(NVS_TYPE_STR, "eq_right", "0,0,0,0,0,0,0,0,0,0", 0);
 	// cJSON_AddStringToObject(values,"eq_right",p);
 	// FREE_AND_NULL(p);
-	p = config_alloc_get_default(NVS_TYPE_STR, "eq_lpf_freq", "0", 0);
-    cJSON_AddStringToObject(values,"eq_lpf_freq",p);
+	// p = config_alloc_get_default(NVS_TYPE_STR, "eq_lpf_freq", "0", 0);
+    // cJSON_AddStringToObject(values,"eq_lpf_freq",p);
+    // FREE_AND_NULL(p);
+	// p = config_alloc_get_default(NVS_TYPE_STR, "eq_hpf_freq", "0", 0);
+    // cJSON_AddStringToObject(values,"eq_hpf_freq",p);
+    // FREE_AND_NULL(p);
+	// p = config_alloc_get_default(NVS_TYPE_STR, "delay_left", "0", 0);
+    // cJSON_AddStringToObject(values,"delay_left",p);
+    // FREE_AND_NULL(p);
+	// p = config_alloc_get_default(NVS_TYPE_STR, "delay_right", "0", 0);
+    // cJSON_AddStringToObject(values,"delay_right",p);
+    // FREE_AND_NULL(p);
+
+	p = config_alloc_get_default(NVS_TYPE_STR, "filters_left", "0", 0);
+    cJSON_AddStringToObject(values,"filters_left",p);
     FREE_AND_NULL(p);
-	p = config_alloc_get_default(NVS_TYPE_STR, "eq_hpf_freq", "0", 0);
-    cJSON_AddStringToObject(values,"eq_hpf_freq",p);
-    FREE_AND_NULL(p);
-	p = config_alloc_get_default(NVS_TYPE_STR, "delay_left", "0", 0);
-    cJSON_AddStringToObject(values,"delay_left",p);
-    FREE_AND_NULL(p);
-	p = config_alloc_get_default(NVS_TYPE_STR, "delay_right", "0", 0);
-    cJSON_AddStringToObject(values,"delay_right",p);
+	p = config_alloc_get_default(NVS_TYPE_STR, "filters_right", "0", 0);
+    cJSON_AddStringToObject(values,"filters_right",p);
     FREE_AND_NULL(p);
 	// cJSON_AddBoolToObject(values,audio_args.two_way_speaker->hdr.longopts,false);
 	p = config_alloc_get_default(NVS_TYPE_STR, "two_way_speaker", "N", 0);
@@ -1578,10 +1600,10 @@ static void register_audio_config(void){
 	// audio_args.eq_left = arg_strn(NULL,"eq_left","<string>",0,20,"10 band equlizer for left (high) channel.; format: 0|0|0|0|0|0|0|0|0|0" );
 	//audio_args.eq_right = arg_str0(NULL,"eq_right","<string>","10 band equlizer for right (low) channel. Format: 0,0,0,0,0,0,0,0,0,0");
 	// arg_strn("c","codecs","+" CODECS "+",0,20,"Restrict codecs to those specified, otherwise load all available codecs; known codecs: " CODECS );
-	audio_args.eq_hpf_freq = arg_int0(NULL, "eq_hpf_freq","0-20000","High pass filter frequency for the left (high) channel. 0 turns it off.");
-	audio_args.eq_lpf_freq = arg_int0(NULL, "eq_lpf_freq","0-20000","Low pass filter frequency for the right (low) channel. 0 turns it off.");
-	audio_args.gain_left = arg_int0(NULL, "gain_left","-100-100","Gain for the left (high) channel in dB/10.");
-	audio_args.gain_right = arg_int0(NULL, "gain_right","-100-100","Delay for the right (low) channel in dB/10.");
+	// audio_args.eq_hpf_freq = arg_int0(NULL, "eq_hpf_freq","0-20000","High pass filter frequency for the left (high) channel. 0 turns it off.");
+	// audio_args.eq_lpf_freq = arg_int0(NULL, "eq_lpf_freq","0-20000","Low pass filter frequency for the right (low) channel. 0 turns it off.");
+	// audio_args.gain_left = arg_int0(NULL, "gain_left","-100-100","Gain for the left (high) channel in dB/10.");
+	// audio_args.gain_right = arg_int0(NULL, "gain_right","-100-100","Delay for the right (low) channel in dB/10.");
 	audio_args.filters_left = arg_str0(NULL,"filters_left","[Type],[Frequency],[Gain],[Q]","Filters for the left (high) channel, ex. [Type],[Frequency],[Gain],[Q],[Type],[Frequency],[Gain],[Q] etc, avaliable types: PK, LP, HP, LS, HS, NO, AP, GA, L1, H1");
 	audio_args.filters_right = arg_str0(NULL,"filters_right","[Type],[Frequency],[Gain],[Q]","Filters for the right (low) channel, ex. [Type],[Frequency],[Gain],[Q],[Type],[Frequency],[Gain],[Q] etc, avaliable types: PK, LP, HP, LS, HS, NO, AP, GA, L1, H1");
 	audio_args.delay_left = arg_int0(NULL, "delay_left","0-1000","Delay for the left (high) channel in us (3 us equals 1mm).");

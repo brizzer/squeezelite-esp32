@@ -194,23 +194,23 @@ s8_t* equalizer_get_config(void) {
 /****************************************************************************************
  * Get channel filter config
  */
-void channel_filter_get_config() {
+// void channel_filter_get_config() {
 
-	filters_reset(channel_filters, &n_channel_filters, MAX_CHANNEL_FILERS);
-	float lpf_freq = equalizer_get_config_value_int("eq_lpf_freq");
-	if (lpf_freq > 0) {
-		biquad_lpf_process = true;
-		filters_add(channel_filters, &n_channel_filters, "LP", lpf_freq, 0.0, 0.7, RIGHT);
-	}
+// 	filters_reset(channel_filters, &n_channel_filters, MAX_CHANNEL_FILERS);
+// 	float lpf_freq = equalizer_get_config_value_int("eq_lpf_freq");
+// 	if (lpf_freq > 0) {
+// 		biquad_lpf_process = true;
+// 		filters_add(channel_filters, &n_channel_filters, "LP", lpf_freq, 0.0, 0.7, RIGHT);
+// 	}
 
-	float hpf_freq = equalizer_get_config_value_int("eq_hpf_freq");
-	if (hpf_freq > 0) {
-		filters_add(channel_filters, &n_channel_filters, "LP", hpf_freq, 0.0, 0.7, LEFT);
-	}
+// 	float hpf_freq = equalizer_get_config_value_int("eq_hpf_freq");
+// 	if (hpf_freq > 0) {
+// 		filters_add(channel_filters, &n_channel_filters, "LP", hpf_freq, 0.0, 0.7, LEFT);
+// 	}
 
-	channel_gain[LEFT] = equalizer_get_config_value_float("gain_left");
-	channel_gain[RIGHT] = equalizer_get_config_value_float("gain_right");
-}
+// 	channel_gain[LEFT] = equalizer_get_config_value_float("gain_left");
+// 	channel_gain[RIGHT] = equalizer_get_config_value_float("gain_right");
+// }
 
 /****************************************************************************************
  * Get channel filter config
@@ -237,11 +237,11 @@ void delay_get_config() {
 /****************************************************************************************
  * Get arbitrary filter config
  */
-void arb_filters_get_config(char *config_name) {
+void filters_get_config(char *config_name, filter_config_t *filter, u8_t *n_filt, u8_t max_filters, channel_t channel, bool reset) {
 	uint8_t num_entries = 0;
 	char* config = config_alloc_get(NVS_TYPE_STR, config_name);
-	// LOG_INFO("filter_get_config %s: %s", config_name, config);
-	filters_reset(arb_filters, &n_arb_filters, MAX_ARB_FILTERS);
+	LOG_INFO("filter_get_config %s: %s", config_name, config);
+	if (reset) filters_reset(filter, &(*n_filt), max_filters);
 	
 	if (!config) {
 		LOG_WARN("%s Config not found", config_name);
@@ -254,40 +254,34 @@ void arb_filters_get_config(char *config_name) {
 			p = strtok(NULL, ", :");
 		}
 		LOG_INFO("num_entries %d", num_entries);
-		if (((num_entries % 4) != 0) || (num_entries > MAX_ARB_FILTERS*4)) {
+		if (((num_entries % 4) != 0) || (num_entries > max_filters*4)) {
 			LOG_ERROR("Invalid %s settings. Resetting it", config_name);
 		} else {
 
-			n_arb_filters = 0;
+			// *n_filt = 0;
 			config = config_alloc_get(NVS_TYPE_STR, config_name);
 			p = strtok(config, ", !");
 			while( p != NULL ) {
 				// [Type],[Frequency],[Gain],[Q]
-				strncpy(arb_filters[n_arb_filters].type, p, 2);
+				strncpy(filter[*n_filt].type, p, 2);
 				// LOG_INFO("filter_get_config ok %s", p);
 				p = strtok(NULL, ", :");
 				// LOG_INFO("filter_get_config ok %s", p);
-				arb_filters[n_arb_filters].frequency = (float)atoff(p);
+				filter[*n_filt].frequency = (float)atoff(p);
 				p = strtok(NULL, ", :");
 				// LOG_INFO("filter_get_config ok %s", p);
-				arb_filters[n_arb_filters].gain = (float)atoff(p);
+				filter[*n_filt].gain = (float)atoff(p);
 				p = strtok(NULL, ", :");
 				// LOG_INFO("filter_get_config ok %s", p);
-				arb_filters[n_arb_filters].q = (float)atoff(p);
+				filter[*n_filt].q = (float)atoff(p);
 				p = strtok(NULL, ", :");
-
-				n_arb_filters++;
-				
+				filter[*n_filt].channel = channel;
+				(*n_filt)++;
 			}
-			// n_filters = n_filter;
 			
-			for (int i = 0; i < n_arb_filters; i++)
+			for (int i = 0; i < *n_filt; i++)
 			{
-				LOG_INFO("Arb filter %d, type: %s, f %f, g %f, q %f", i, arb_filters[i].type, arb_filters[i].frequency, arb_filters[i].gain, arb_filters[i].q);
-				// filters[i].frequency = 0.0;
-				// filters[i].gain = 0.0;
-				// filters[i].q = 0.0;
-				// strcpy(filters[i].type, "");
+				LOG_INFO("%s %d, type: %s, f %f, g %f, q %f", config_name, i, arb_filters[i].type, arb_filters[i].frequency, arb_filters[i].gain, arb_filters[i].q);
 			}
 		}
 		free(config);
@@ -350,7 +344,7 @@ __attribute__((optimize("O2"))) void filters_calc_coeff(filter_config_t *filter,
 	LOG_DEBUG("Calculating filters");
 	for (int i = 0; i < *n_filt; i++)  // PK, LP, HP, LS, HS, NO, AP
 	{
-		LOG_DEBUG("filter type: %s, %d", filter[i].type, strcmp(filter[i].type, "PK"));
+		// LOG_DEBUG("filter type: %s, %d", filter[i].type, strcmp(filter[i].type, "PK"));
 		// filter[i].process = true;
 		if (strcmp(filter[i].type, "PK") == 0) // peaking EQ
 		{
@@ -509,8 +503,11 @@ void equalizer_init(void) {
 	n_eq_filters = EQ_BANDS;
 
 	equalizer_update(pGains);
-	arb_filters_get_config("filter_json");
-	channel_filter_get_config();
+	// arb_filters_get_config("filter_json");
+	filters_get_config("filter_json", arb_filters, &n_arb_filters, MAX_ARB_FILTERS, BOTH, true);
+	filters_get_config("filters_left", channel_filters, &n_channel_filters, MAX_CHANNEL_FILERS, LEFT, true);
+	filters_get_config("filters_right", channel_filters, &n_channel_filters, MAX_CHANNEL_FILERS, RIGHT, false);
+	// channel_filter_get_config();
 	delay_get_config();
 	// equalizer_two_way_update();
 	
@@ -793,8 +790,9 @@ __attribute__((optimize("O2"))) void filter_all(struct buffer *outputbuf, frames
 			}
 			
 		}
-		// TODO: apply gain
 
+		if (temp_val > 2147483646.0) temp_val = 2147483646.0;
+		if (temp_val < -2147483646.0) temp_val = -2147483646.0;
 		*ptr = (ISAMPLE_T)temp_val;
 		ptr += 2;
     }
