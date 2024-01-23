@@ -1,0 +1,3 @@
+[{"gpio":21,"type":"BUTTON_HIGH","pull":false,"normal":{"pressed":"ACTRLS_VOLDOWN"}},
+ {"gpio":22,"type":"BUTTON_HIGH","pull":false,"normal":{"pressed":"ACTRLS_VOLUP"}},
+ {"gpio":19,"type":"BUTTON_HIGH","pull":false,"normal":{"pressed":"ACTRLS_TOGGLE"}}]
