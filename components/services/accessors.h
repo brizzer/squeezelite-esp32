@@ -13,7 +13,7 @@
 #include "driver/i2s.h"
 #include "driver/spi_master.h"
 #include "gpio_exp.h"
-
+#include "cJSON.h"
 extern const char *i2c_name_type;
 extern const char *spi_name_type;
 
@@ -86,6 +86,13 @@ typedef struct {
 } rotary_struct_t;
 
 typedef struct {
+	char type[16];
+	int length;
+	int gpio;
+	int scale;
+} ledvu_struct_t;
+
+typedef struct {
 	bool fixed;
 	char * name;
 	char * group;
@@ -116,3 +123,5 @@ bool 						is_dac_config_locked();
 bool 						are_statistics_enabled();
 const rotary_struct_t * 	config_rotary_get();
 esp_err_t 					config_rotary_set(rotary_struct_t * rotary);
+const ledvu_struct_t * 		config_ledvu_get();
+esp_err_t 					config_ledvu_set(ledvu_struct_t * ledvu);

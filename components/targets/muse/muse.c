@@ -8,6 +8,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include "driver/rmt.h"
+#include "globdefs.h"
 #include "monitor.h"
 #include "targets.h"
 
@@ -15,7 +16,6 @@
 //*********************** NeoPixels  ***************************
 ////////////////////////////////////////////////////////////////
 #define NUM_LEDS  1
-#define LED_RMT_TX_CHANNEL   0
 #define LED_RMT_TX_GPIO      22
 
 #define BITS_PER_LED_CMD 24 
@@ -39,6 +39,8 @@ struct led_state {
     uint32_t leds[NUM_LEDS];
 };
 
+static int rmt_channel;
+
 void ws2812_control_init(void);
 void ws2812_write_leds(struct led_state new_state);
 
@@ -46,8 +48,8 @@ void ws2812_write_leds(struct led_state new_state);
 
 static const char TAG[] = "muse";	
 
-static void (*battery_handler_chain)(float value);
-static void battery_svc(float value);
+static void (*battery_handler_chain)(float value, int cells);
+static void battery_svc(float value, int cells);
 static bool init(void);
 static void set_battery_led(float value);
 
@@ -79,11 +81,11 @@ static void set_battery_led(float value) {
 	ws2812_write_leds(new_state);	        
 }
 
-static void battery_svc(float value) {
+static void battery_svc(float value, int cells) {
 	set_battery_led(value);
 	ESP_LOGI(TAG, "Called for battery service with %f", value);
 
-	if (battery_handler_chain) battery_handler_chain(value);
+	if (battery_handler_chain) battery_handler_chain(value, cells);
 }
 
 // This is the buffer which the hw peripheral will access while pulsing the output pin
@@ -93,9 +95,10 @@ void setup_rmt_data_buffer(struct led_state new_state);
 
 void ws2812_control_init(void)
 {
+  rmt_channel = RMT_NEXT_TX_CHANNEL();  
   rmt_config_t config;
   config.rmt_mode = RMT_MODE_TX;
-  config.channel = LED_RMT_TX_CHANNEL;
+  config.channel = rmt_channel;
   config.gpio_num = LED_RMT_TX_GPIO;
   config.mem_block_num = 3;
   config.tx_config.loop_en = false;
@@ -106,11 +109,13 @@ void ws2812_control_init(void)
 
   ESP_ERROR_CHECK(rmt_config(&config));
   ESP_ERROR_CHECK(rmt_driver_install(config.channel, 0, 0));
+  
+  ESP_LOGI(TAG, "LED wth ws2812 using gpio %d and channel %d", LED_RMT_TX_GPIO, rmt_channel);
 }
 
 void ws2812_write_leds(struct led_state new_state) {
   setup_rmt_data_buffer(new_state);
-  rmt_write_items(LED_RMT_TX_CHANNEL, led_data_buffer, LED_BUFFER_ITEMS, false);
+  rmt_write_items(rmt_channel, led_data_buffer, LED_BUFFER_ITEMS, false);
 }
 
 void setup_rmt_data_buffer(struct led_state new_state) 

@@ -60,7 +60,7 @@ frames_t _output_frames(frames_t avail) {
 	silence = false;
 
 	// start when threshold met
-	if (output.state == OUTPUT_BUFFER && (frames * BYTES_PER_FRAME) > output.threshold * output.next_sample_rate / 10 && frames > output.start_frames) {
+	if (output.state == OUTPUT_BUFFER && frames > output.threshold * output.next_sample_rate / 10 && frames > output.start_frames) {
 		output.state = OUTPUT_RUNNING;
 		LOG_INFO("start buffer frames: %u", frames);
 		wake_controller();
@@ -443,7 +443,7 @@ void output_close_common(void) {
 }
 
 void output_flush(void) {
-	LOG_INFO("flush output buffer");
+	LOG_INFO("flush output buffer (full)");
 	buf_flush(outputbuf);
 	LOCK;
 	output.fade = FADE_INACTIVE;
@@ -456,4 +456,16 @@ void output_flush(void) {
 	}
 	output.frames_played = 0;
 	UNLOCK;
+}
+
+bool output_flush_streaming(void) {
+	LOG_INFO("flush output buffer (streaming)");
+	LOCK;
+	bool flushed = output.track_start != NULL;
+	if (output.track_start) {
+		outputbuf->writep = output.track_start;
+		output.track_start = NULL;
+	}
+	UNLOCK;
+	return flushed;
 }

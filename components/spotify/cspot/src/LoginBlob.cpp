@@ -3,10 +3,10 @@
 #include <stdio.h>           // for sprintf
 #include <initializer_list>  // for initializer_list
 
-#include "BellLogger.h"                      // for AbstractLogger
-#include "ConstantParameters.h"              // for brandName, cspot, protoc...
-#include "Logger.h"                          // for CSPOT_LOG
-#include "protobuf/authentication.pb.h"      // for AuthenticationType_AUTHE...
+#include "BellLogger.h"                  // for AbstractLogger
+#include "ConstantParameters.h"          // for brandName, cspot, protoc...
+#include "Logger.h"                      // for CSPOT_LOG
+#include "protobuf/authentication.pb.h"  // for AuthenticationType_AUTHE...
 #ifdef BELL_ONLY_CJSON
 #include "cJSON.h"
 #else
@@ -144,6 +144,7 @@ void LoginBlob::loadJson(const std::string& json) {
   this->username = cJSON_GetObjectItem(root, "username")->valuestring;
   std::string authDataObject =
       cJSON_GetObjectItem(root, "authData")->valuestring;
+  this->authData = crypto->base64Decode(authDataObject);
   cJSON_Delete(root);
 #else
   auto root = nlohmann::json::parse(json);

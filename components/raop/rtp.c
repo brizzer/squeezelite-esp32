@@ -82,7 +82,7 @@ static log_level 	*loglevel = &raop_loglevel;
 #define RTP_SYNC	(0x01)
 #define NTP_SYNC	(0x02)
 
-#define RESEND_TO	200
+#define RESEND_TO	250
 
 enum { DATA = 0, CONTROL, TIMING };
 
@@ -126,11 +126,6 @@ typedef struct rtp_s {
 		u32_t 	rtp, time;
 		u8_t  	status;
 	} synchro;
-	struct {
-		u32_t time;
-		seq_t seqno;
-		u32_t rtptime;
-	} record;
 	int latency;			// rtp hold depth in samples
 	u32_t resent_req, resent_rec;	// total resent + recovered frames
 	u32_t silent_frames;	// total silence frames
@@ -147,8 +142,9 @@ typedef struct rtp_s {
 #endif
 
 	struct alac_codec_s *alac_codec;
-	int flush_seqno;
-	bool playing;
+	int first_seqno;
+	enum { RTP_WAIT, RTP_STREAM, RTP_PLAY } state;
+    int stalled;
 	raop_data_cb_t data_cb;
 	raop_cmd_cb_t cmd_cb;
 } rtp_t;
@@ -230,7 +226,7 @@ rtp_resp_t rtp_init(struct in_addr host, int latency, char *aeskey, char *aesiv,
 	ctx->rtp_host.sin_family = AF_INET;
 	ctx->rtp_host.sin_addr.s_addr = INADDR_ANY;
 	pthread_mutex_init(&ctx->ab_mutex, 0);
-	ctx->flush_seqno = -1;
+	ctx->first_seqno = -1;
 	ctx->latency = latency;
 	ctx->ab_read = ctx->ab_write;
 
@@ -338,24 +334,23 @@ void rtp_end(rtp_t *ctx)
 
 /*---------------------------------------------------------------------------*/
 bool rtp_flush(rtp_t *ctx, unsigned short seqno, unsigned int rtptime, bool exit_locked)
-{
-	bool rc = true;
-	u32_t now = gettime_ms();
+{  
+    pthread_mutex_lock(&ctx->ab_mutex);
+    
+    // always store flush seqno as we only want stricly above it, even when equal to RECORD
+    ctx->first_seqno = seqno;
+    bool flushed = false;
 
-	if (now < ctx->record.time + 250 || (ctx->record.seqno == seqno && ctx->record.rtptime == rtptime)) {
-		rc = false;
-		LOG_ERROR("[%p]: FLUSH ignored as same as RECORD (%hu - %u)", ctx, seqno, rtptime);
-	} else {
-		pthread_mutex_lock(&ctx->ab_mutex);
-		buffer_reset(ctx->audio_buffer);
-		ctx->playing = false;
-		ctx->flush_seqno = seqno;
-		if (!exit_locked) pthread_mutex_unlock(&ctx->ab_mutex);
+    // no need to stop playing if recent or equal to record - but first_seqno is needed
+    if (ctx->state == RTP_PLAY) {
+        buffer_reset(ctx->audio_buffer);
+        ctx->state = RTP_WAIT;
+        flushed = true;
+        LOG_INFO("[%p]: FLUSH packets below %hu - %u", ctx, seqno, rtptime);
 	}
-
-	LOG_INFO("[%p]: flush %hu %u", ctx, seqno, rtptime);
-
-	return rc;
+    
+	if (!exit_locked || !flushed) pthread_mutex_unlock(&ctx->ab_mutex);
+	return flushed;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -366,11 +361,9 @@ void rtp_flush_release(rtp_t *ctx) {
 
 /*---------------------------------------------------------------------------*/
 void rtp_record(rtp_t *ctx, unsigned short seqno, unsigned rtptime) {
-	ctx->record.seqno = seqno;
-	ctx->record.rtptime = rtptime;
-	ctx->record.time = gettime_ms();
-
-	LOG_INFO("[%p]: record %hu %u", ctx, seqno, rtptime);
+    ctx->first_seqno = (seqno || rtptime) ? seqno : -1;
+	ctx->state = RTP_WAIT;
+	LOG_INFO("[%p]: record %hu - %u", ctx, seqno, rtptime);	
 }
 
 /*---------------------------------------------------------------------------*/
@@ -441,51 +434,76 @@ static void alac_decode(rtp_t *ctx, s16_t *dest, char *buf, int len, u16_t *outs
 /*---------------------------------------------------------------------------*/
 static void buffer_put_packet(rtp_t *ctx, seq_t seqno, unsigned rtptime, bool first, char *data, int len) {
 	abuf_t *abuf = NULL;
-	u32_t playtime;
 
 	pthread_mutex_lock(&ctx->ab_mutex);
+    
+    /* if we have received a RECORD with a seqno, then this is the first allowed rtp sequence number 
+	 * and we are in RTP_WAIT state. If seqno was 0, then we are waiting for a flush that will tell 
+	 * us what should be our first allowed packet but we must accept everything, wait and clean when 
+	 * we the it arrives. This means that first packet moves us to RTP_STREAM state where we accept
+	 * frames but wait for the FLUSH. If this was a FLUSH while playing, then we are also in RTP_WAIT 
+	 * state but we do have an allowed seqno and we should not accept any frame before we have it */
 
-	if (!ctx->playing) {
-		if ((ctx->flush_seqno == -1 || seq_order(ctx->flush_seqno, seqno)) &&
-		   (ctx->synchro.status & RTP_SYNC) && (ctx->synchro.status & NTP_SYNC)) {
-			ctx->ab_write = seqno-1;
-			ctx->ab_read = seqno;
-			ctx->flush_seqno = -1;
-			ctx->playing = true;
-			ctx->resent_req = ctx->resent_rec = ctx->silent_frames = ctx->discarded = 0;
-			playtime = ctx->synchro.time + ((rtptime - ctx->synchro.rtp) * 10) / (RAOP_SAMPLE_RATE / 100);
-			ctx->cmd_cb(RAOP_PLAY, playtime);
-		} else {
-			pthread_mutex_unlock(&ctx->ab_mutex);
-			return;
-		}
+	// if we have a pending first seqno and we are below, always ignore it
+	if (ctx->first_seqno != -1 && seq_order(seqno, ctx->first_seqno)) {
+		pthread_mutex_unlock(&ctx->ab_mutex);
+		return;
 	}
+
+	if (ctx->state == RTP_WAIT) {
+		ctx->ab_write = seqno - 1;
+		ctx->ab_read = ctx->ab_write + 1;
+        ctx->resent_req = ctx->resent_rec = ctx->silent_frames = ctx->discarded = 0;        
+		if (ctx->first_seqno != -1) {
+        	LOG_INFO("[%p]: 1st accepted packet:%d, now playing", ctx, seqno);                                    
+			ctx->state = RTP_PLAY;
+			ctx->first_seqno = -1;
+            u32_t playtime = ctx->synchro.time + ((rtptime - ctx->synchro.rtp) * 10) / (RAOP_SAMPLE_RATE / 100);            
+            ctx->cmd_cb(RAOP_PLAY, playtime);         
+		} else {
+            ctx->state = RTP_STREAM;
+			LOG_INFO("[%p]: 1st accepted packet:%hu, waiting for FLUSH", ctx, seqno);
+		}
+	} else if (ctx->state == RTP_STREAM && ctx->first_seqno != -1 && seq_order(ctx->first_seqno, seqno + 1)) {
+		// now we're talking, but first discard all packets with a seqno below first_seqno AND not ready
+		while (seq_order(ctx->ab_read, ctx->first_seqno) ||
+			!ctx->audio_buffer[BUFIDX(ctx->ab_read)].ready) {
+			ctx->audio_buffer[BUFIDX(ctx->ab_read)].ready = false;
+			ctx->ab_read++;
+		}
+        LOG_INFO("[%p]: done waiting for FLUSH with packet:%d, now playing starting:%hu", ctx, seqno, ctx->ab_read);
+		ctx->state = RTP_PLAY;
+		ctx->first_seqno = -1;
+        u32_t playtime = ctx->synchro.time + ((rtptime - ctx->synchro.rtp) * 10) / (RAOP_SAMPLE_RATE / 100);            
+		ctx->cmd_cb(RAOP_PLAY, playtime);         
+	}   
 
 	if (seqno == (u16_t) (ctx->ab_write+1)) {
 		// expected packet
 		abuf = ctx->audio_buffer + BUFIDX(seqno);
 		ctx->ab_write = seqno;
 		LOG_SDEBUG("packet expected seqno:%hu rtptime:%u (W:%hu R:%hu)", seqno, rtptime, ctx->ab_write, ctx->ab_read);
-
 	} else if (seq_order(ctx->ab_write, seqno)) {
-		seq_t i;
-		u32_t now;
-
 		// newer than expected
 		if (ctx->latency && seq_order(ctx->latency / ctx->frame_size, seqno - ctx->ab_write - 1)) {
-			// only get rtp latency-1 frames back (last one is seqno)
-			LOG_WARN("[%p] too many missing frames %hu seq: %hu, (W:%hu R:%hu)", ctx, seqno - ctx->ab_write - 1, seqno, ctx->ab_write, ctx->ab_read);
-			ctx->ab_write = seqno - ctx->latency / ctx->frame_size;
-		}
+			// this is a shitstorm, reset buffer
+            LOG_WARN("[%p] too many missing frames %hu seq: %hu, (W:%hu R:%hu)", ctx, seqno - ctx->ab_write - 1, seqno, ctx->ab_write, ctx->ab_read);
+            ctx->ab_read = seqno;            
+		} else {
+            // request re-send missed frames and evaluate resent date as a whole *after*
+            if (ctx->state == RTP_PLAY) rtp_request_resend(ctx, ctx->ab_write + 1, seqno-1);
+            
+            // resend date is after all requests have been sent
+            u32_t now = gettime_ms();
+            
+            // set expected timing of missed frames for buffer_push_packet and set last_resend date
+            for (seq_t i = ctx->ab_write + 1; seq_order(i, seqno); i++) {
+                ctx->audio_buffer[BUFIDX(i)].rtptime = rtptime - (seqno-i)*ctx->frame_size;
+                ctx->audio_buffer[BUFIDX(i)].last_resend = now;
+            }
+            LOG_DEBUG("[%p]: packet newer seqno:%hu rtptime:%u (W:%hu R:%hu)", ctx, seqno, rtptime, ctx->ab_write, ctx->ab_read);            
+        }        
 
-		// need to request re-send and adjust timing of gaps
-		rtp_request_resend(ctx, ctx->ab_write + 1, seqno-1);
-		for (now = gettime_ms(), i = ctx->ab_write + 1; seq_order(i, seqno); i++) {
-			ctx->audio_buffer[BUFIDX(i)].rtptime = rtptime - (seqno-i)*ctx->frame_size;
-			ctx->audio_buffer[BUFIDX(i)].last_resend = now;
-		}
-
-		LOG_DEBUG("[%p]: packet newer seqno:%hu rtptime:%u (W:%hu R:%hu)", ctx, seqno, rtptime, ctx->ab_write, ctx->ab_read);
 		abuf = ctx->audio_buffer + BUFIDX(seqno);
 		ctx->ab_write = seqno;
 	} else if (seq_order(ctx->ab_read, seqno + 1)) {
@@ -524,10 +542,9 @@ static void buffer_put_packet(rtp_t *ctx, seq_t seqno, unsigned rtptime, bool fi
 static void buffer_push_packet(rtp_t *ctx) {
 	abuf_t *curframe = NULL;
 	u32_t now, playtime, hold = max((ctx->latency * 1000) / (8 * RAOP_SAMPLE_RATE), 100);
-	int i;
 
 	// not ready to play yet
-	if (!ctx->playing ||  ctx->synchro.status != (RTP_SYNC | NTP_SYNC)) return;
+	if (ctx->state != RTP_PLAY || ctx->synchro.status != (RTP_SYNC | NTP_SYNC)) return;
 
 	// there is always at least one frame in the buffer
 	do {
@@ -571,16 +588,25 @@ static void buffer_push_packet(rtp_t *ctx) {
 	}
 
 	LOG_SDEBUG("playtime %u %d [W:%hu R:%hu] %d", playtime, playtime - now, ctx->ab_write, ctx->ab_read, curframe->ready);
+   
+    // try to request resend missing packet in order, explore up to 32 frames
+    for (int step = max((ctx->ab_write - ctx->ab_read + 1) / 32, 1), 
+         i = 0, first = 0; 
+         seq_order(ctx->ab_read + i, ctx->ab_write); i += step) {
+             
+        abuf_t* frame = ctx->audio_buffer + BUFIDX(ctx->ab_read + i);
 
-	// each missing packet will be requested up to (latency_frames / 16) times
-	for (i = 0; seq_order(ctx->ab_read + i, ctx->ab_write); i += 16) {
-		abuf_t *frame = ctx->audio_buffer + BUFIDX(ctx->ab_read + i);
-		if (!frame->ready && now - frame->last_resend > RESEND_TO) {
-			rtp_request_resend(ctx, ctx->ab_read + i, ctx->ab_read + i);
-			frame->last_resend = now;
-		}
-	}
-}
+        // stop when we reach a ready frame or a recent pending resend
+        if (first && (frame->ready || now - frame->last_resend <= RESEND_TO)) {
+            if (!rtp_request_resend(ctx, first, ctx->ab_read + i - 1)) break;
+            first = 0;
+            i += step - 1;
+        } else if (!frame->ready && now - frame->last_resend > RESEND_TO) {
+            if (!first) first = ctx->ab_read + i;
+            frame->last_resend = now;
+        }
+    }
+}
 
 
 /*---------------------------------------------------------------------------*/
@@ -613,7 +639,10 @@ static void rtp_thread_func(void *arg) {
 		FD_ZERO(&fds);
 		for (i = 0; i < 3; i++)	{ FD_SET(ctx->rtp_sockets[i].sock, &fds); }
 
-		if (select(sock + 1, &fds, NULL, NULL, &timeout) <= 0) continue;
+		if (select(sock + 1, &fds, NULL, NULL, &timeout) <= 0) {
+            if (ctx->stalled++ == 30*10) ctx->cmd_cb(RAOP_STALLED);
+            continue;
+        }
 
 		for (i = 0; i < 3; i++)
 			if (FD_ISSET(ctx->rtp_sockets[i].sock, &fds)) idx = i;
@@ -631,6 +660,7 @@ static void rtp_thread_func(void *arg) {
 		}
 		
 		assert(plen <= MAX_PACKET);
+        ctx->stalled = 0;
 
 		type = packet[1] & ~0x80;
 		pktp = packet;
@@ -823,6 +853,7 @@ static bool rtp_request_resend(rtp_t *ctx, seq_t first, seq_t last) {
 
 	if (sizeof(req) != sendto(ctx->rtp_sockets[CONTROL].sock, req, sizeof(req), MSG_DONTWAIT, (struct sockaddr*) &ctx->rtp_host, sizeof(ctx->rtp_host))) {
 		LOG_WARN("[%p]: SENDTO failed (%s)", ctx, strerror(errno));
+        return false;
 	}
 
 	return true;

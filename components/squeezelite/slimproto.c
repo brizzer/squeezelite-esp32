@@ -305,8 +305,18 @@ static void process_strm(u8_t *pkt, int len) {
 		sendSTAT("STMt", strm->replay_gain); // STMt replay_gain is no longer used to track latency, but support it
 		break;
 	case 'f':	
+    	{
+            decode_flush(false);
+            bool flushed = false;            
+            if (!output.external) flushed |= output_flush_streaming();
+			// we can have fully finished the current streaming, that's still a flush
+			if (stream_disconnect() || flushed) sendSTAT("STMf", 0);
+			buf_flush(streambuf);
+            output.stop_time = gettime_ms();
+			break;
+		}
 	case 'q':
-		decode_flush(strm->command == 'q');
+		decode_flush(true);
 		if (!output.external) output_flush();
 		status.frames_played = 0;
 		if (stream_disconnect() && strm->command == 'f') sendSTAT("STMf", 0);
@@ -383,7 +393,9 @@ static void process_strm(u8_t *pkt, int len) {
 				stream_file(header, header_len, strm->threshold * 1024);
 				autostart -= 2;
 			} else {
-				stream_sock(ip, port, header, header_len, strm->threshold * 1024, autostart >= 2);
+				stream_sock(ip, port, strm->flags & 0x20, 
+                            strm->format == 'o' || strm->format == 'u' || (strm->format == 'f' && strm->pcm_sample_size == 'o'),
+                            header, header_len, strm->threshold * 1024, autostart >= 2);
 			}
 			sendSTAT("STMc", 0);
 			sentSTMu = sentSTMo = sentSTMl = false;
@@ -441,6 +453,10 @@ static void process_aude(u8_t *pkt, int len) {
 	struct aude_packet *aude = (struct aude_packet *)pkt;
 
 	LOG_DEBUG("enable spdif: %d dac: %d", aude->enable_spdif, aude->enable_dac);
+    
+#if EMBEDDED
+    powering(aude->enable_spdif),
+#endif    
 
 	LOCK_O;
 	if (!aude->enable_spdif && output.state != OUTPUT_OFF) {
@@ -978,8 +994,8 @@ void slimproto(log_level level, char *server, u8_t mac[6], const char *name, con
 			// in embedded we give up after a while no matter what
 			if (++failed_connect > MAX_SERVER_RETRIES && !server) {
 				slimproto_ip = serv_addr.sin_addr.s_addr = discover_server(NULL, MAX_SERVER_RETRIES);
-				if (!slimproto_ip) return;
-			} else if (reconnect && MAX_SERVER_RETRIES && failed_connect > 5 * MAX_SERVER_RETRIES) return;
+				if (!slimproto_ip && !output.external) return;
+			} else if (reconnect && MAX_SERVER_RETRIES && failed_connect > 5 * MAX_SERVER_RETRIES && !output.external) return;
 #else
 			// rediscover server if it was not set at startup or exit 
 			if (!server && ++failed_connect > 5) {

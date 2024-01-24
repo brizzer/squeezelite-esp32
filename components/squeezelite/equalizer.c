@@ -20,6 +20,7 @@
 #pragma GCC optimize ("-O2")
 
 #define EQ_BANDS 10
+
 #define MAX_ARB_FILTERS 10
 #define MAX_CHANNEL_FILERS 5
 // #define MAX_FILTERS EQ_BANDS+MAX_ARB_FILTERS+CHANNEL_FILERS
@@ -34,8 +35,8 @@ float biquad_d0;
 float temp_val;
 
 #define POLYNOME_COUNT 6
-static const float loudness_envelope_coefficients[EQ_BANDS][POLYNOME_COUNT] =
-{ {5.5169301499257067e+001, 6.3671410796029004e-001,
+static const float loudness_envelope_coefficients[EQ_BANDS][POLYNOME_COUNT] = {
+ {5.5169301499257067e+001, 6.3671410796029004e-001,
   -4.2663226432095233e-002, 8.1063072336581246e-004,
   -7.3621858933917722e-006, 2.5349489594339575e-008},
  {3.7716143859944118e+001, 1.2355293276538579e+000,
@@ -80,17 +81,37 @@ bool biquad_hpf_process = false;
 
 float eq_taps[EQ_BANDS] = {31,62,125,250,500,1000,2000,4000,8000,16000};
 
-static struct {
+static EXT_RAM_ATTR struct {
 	void *handle;
-	float gain[EQ_BANDS];
+	float loudness, volume;
+    uint32_t samplerate;
+	float gain[EQ_BANDS], loudness_gain[EQ_BANDS];
 	float real_gain[EQ_BANDS];
 	bool update;
 	// float two_way_gain_left[EQ_BANDS];
 	// float two_way_gain_right[EQ_BANDS];
 	float low_pass_filter_freq;
 	float high_pass_filter_freq;
-	u32_t sample_rate;
 } equalizer = { .update = true, .sample_rate = 44100 };
+
+
+/****************************************************************************************
+ * calculate loudness gains
+ */
+static void calculate_loudness(void) {
+    char trace[EQ_BANDS * 5 + 1];
+    size_t n = 0;
+	for (int i = 0; i < EQ_BANDS; i++) {
+		for (int j = 0; j < POLYNOME_COUNT && equalizer.loudness != 0; j++) {
+			equalizer.loudness_gain[i] +=
+				loudness_envelope_coefficients[i][j] * pow(equalizer.volume, j);
+		}
+		equalizer.loudness_gain[i] *= equalizer.loudness / 2;
+        n += sprintf(trace + n, "%.2g%c", equalizer.loudness_gain[i], i < EQ_BANDS ? ',' : '\0');
+	}
+    LOG_INFO("loudness %s", trace);    
+}
+
 
 
 u16_t channel_delay = 0;
@@ -499,6 +520,24 @@ void equalizer_update(s8_t* gain) {
  */
 void equalizer_init(void) {
 	s8_t* pGains = equalizer_get_config();
+
+	// // handle equalizer
+	// char *config = config_alloc_get(NVS_TYPE_STR, "equalizer");
+	// char *p = strtok(config, ", !");
+
+	// for (int i = 0; p && i < EQ_BANDS; i++) {
+	// 	equalizer.gain[i] = atoi(p);
+	// 	p = strtok(NULL, ", :");
+	// }
+
+	// free(config);
+
+    // // handle loudness
+    // config = config_alloc_get(NVS_TYPE_STR, "loudness");
+    // equalizer.loudness = atof(config) / 10.0;
+
+	// free(config);
+
 	filters_reset(eq_filters, &n_eq_filters, EQ_BANDS);
 	n_eq_filters = EQ_BANDS;
 
@@ -520,6 +559,8 @@ void equalizer_init(void) {
 	
 	LOG_INFO("initializing equalizer, loudness %s", loudness_factor > 0 ? "ENABLED" : "DISABLED");
 	free(pGains);
+
+	
 }
 
 /****************************************************************************************
@@ -563,6 +604,7 @@ void equalizer_open(u32_t sample_rate) {
 	// } else {
 	// 	LOG_WARN("can't init equalizer");
 	// }
+    
 }
 
 /****************************************************************************************
@@ -593,25 +635,25 @@ void equalizer_print_bands(const char* message, float* values, uint8_t count) {
 }
 /****************************************************************************************
  * Calculates loudness values for each band at a given volume
- */
-float* calculate_loudness_curve(float volume_level) {
-	LOG_DEBUG("Calculating loudness curve for volume level %.3f", volume_level);
-	float* loudness_curve = malloc(EQ_BANDS * sizeof(float));
-	memset(loudness_curve, 0x00, EQ_BANDS * sizeof(float));
-	equalizer_get_loudness_factor();
-	for (int i = 0; i < EQ_BANDS && loudness_factor > 0; i++) {
-		for (int j = 0; j < POLYNOME_COUNT; j++) {
-			loudness_curve[i] +=
-				loudness_envelope_coefficients[i][j] * pow(volume_level, j);
-		}
-		loudness_curve[i] *= loudness_factor;
-	}
-	if (loglevel >= lDEBUG) {
-	equalizer_print_bands("calculated Loudness: ", loudness_curve, EQ_BANDS);
-	}
+//  */
+// float* calculate_loudness_curve(float volume_level) {
+// 	LOG_DEBUG("Calculating loudness curve for volume level %.3f", volume_level);
+// 	float* loudness_curve = malloc(EQ_BANDS * sizeof(float));
+// 	memset(loudness_curve, 0x00, EQ_BANDS * sizeof(float));
+// 	equalizer_get_loudness_factor();
+// 	for (int i = 0; i < EQ_BANDS && loudness_factor > 0; i++) {
+// 		for (int j = 0; j < POLYNOME_COUNT; j++) {
+// 			loudness_curve[i] +=
+// 				loudness_envelope_coefficients[i][j] * pow(volume_level, j);
+// 		}
+// 		loudness_curve[i] *= loudness_factor;
+// 	}
+// 	if (loglevel >= lDEBUG) {
+// 	equalizer_print_bands("calculated Loudness: ", loudness_curve, EQ_BANDS);
+// 	}
 	
-	return loudness_curve;
-}
+// 	return loudness_curve;
+// }
 
 /****************************************************************************************
  * Combine Loudness and user EQ settings and apply them
@@ -633,23 +675,137 @@ void equalizer_apply_loudness() {
 
 /****************************************************************************************
  * process equalizer
+/****************************************************************************************
+ * change sample rate
  */
-void equalizer_process(u8_t *buf, u32_t bytes, u32_t sample_rate) {
+void equalizer_set_samplerate(uint32_t samplerate) {
+#if BYTES_PER_FRAME == 4
+    if (equalizer.samplerate != samplerate) equalizer_close();
+    equalizer.samplerate = samplerate;
+    equalizer.update = true;
+
+    LOG_INFO("equalizer sample rate %u", samplerate);
+#else
+    LOG_INFO("no equalizer with 32 bits samples");
+#endif
+}
+
+/****************************************************************************************
+ * get volume update and recalculate loudness according to
+ */
+void equalizer_set_volume(unsigned left, unsigned right) {
+#if BYTES_PER_FRAME == 4
+    float volume = (left + right) / 2;
+    // do classic dB conversion and scale it 0..100
+	if (volume) volume = log2(volume);
+	volume = volume / 16.0 * 100.0;
+    
+    // LMS has the bad habit to send multiple volume commands
+    if (volume != equalizer.volume && equalizer.loudness) {
+        equalizer.volume = volume;
+        calculate_loudness();
+        equalizer.update = true;
+    }
+#endif
+}
+
+/****************************************************************************************
+ * change gains from LMS
+ */
+void equalizer_set_gain(int8_t *gain) {
+#if BYTES_PER_FRAME == 4
+    char config[EQ_BANDS * 4 + 1] = { };
+	int n = 0;
+    
+    for (int i = 0; i < EQ_BANDS; i++) {
+		equalizer.gain[i] = gain[i];
+		n += sprintf(config + n, "%d,", gain[i]);
+	}
+
+	config[n-1] = '\0';
+	config_set_value(NVS_TYPE_STR, "equalizer", config);
+    
+    // update only if something changed
+    if (!memcmp(equalizer.gain, gain, EQ_BANDS)) equalizer.update = true;
+
+    LOG_INFO("equalizer gain %s", config);
+#else
+    LOG_INFO("no equalizer with 32 bits samples");
+#endif
+}
+
+/****************************************************************************************
+ * change loudness from LMS
+ */
+void equalizer_set_loudness(uint8_t loudness) {
+#if BYTES_PER_FRAME == 4
+    char p[4];
+    itoa(loudness, p, 10);
+    config_set_value(NVS_TYPE_STR, "loudness", p);
+    
+    // update loudness gains as a factor of loudness and volume
+    if (equalizer.loudness != loudness / 10.0) {
+        equalizer.loudness = loudness / 10.0;
+        calculate_loudness();
+        equalizer.update = true;
+    }
+
+    LOG_INFO("loudness %u", (unsigned) loudness);
+#else
+    LOG_INFO("no equalizer with 32 bits samples");
+#endif
+}
+
+/****************************************************************************************
+ * process equalizer
+ */
+void equalizer_process(uint8_t *buf, uint32_t bytes) {
+// #if BYTES_PER_FRAME == 4    
 	// don't want to process with output locked, so take the small risk to miss one parametric update
 	if (equalizer.update) {
 		// equalizer_close();
 		equalizer_open(sample_rate);
+	
+		equalizer.sample_rate = sample_rate;
+
+		// if (equalizer.handle) {
+		// 	esp_equalizer_process(equalizer.handle, buf, bytes, sample_rate, 2);
+		// }
+
+		// if (biquad_lpf_process) {
+		// 	biquad_i16(buf, bytes, biquad_lpf_coeffs, biquad_lpf_w, 0);
+		// }
+		equalizer.update = false;
+
+        // if (equalizer.samplerate != 11025 && equalizer.samplerate != 22050 && equalizer.samplerate != 44100 && equalizer.samplerate != 48000) {
+        //     LOG_WARN("equalizer only supports 11025, 22050, 44100 and 48000 sample rates, not %u", equalizer.samplerate);
+        //     return;
+        // }
+
+        // if (!equalizer.handle && ((equalizer.handle = esp_equalizer_init(2, equalizer.samplerate, EQ_BANDS, 0)) == NULL)) {
+        //     LOG_WARN("can't init equalizer");
+        //     return;
+        // }
+
+		bool active = false;
+		// for (int i = 0; i < EQ_BANDS; i++) {
+        //     float gain = equalizer.gain[i] + equalizer.loudness_gain[i];
+		// 	esp_equalizer_set_band_value(equalizer.handle, gain, i, 0);
+		// 	esp_equalizer_set_band_value(equalizer.handle, gain, i, 1);
+		// 	active |= gain != 0;
+		// }
+
+		// at the end do not activate equalizer if all gain are 0
+		// if (!active) equalizer_close();
+		// LOG_INFO("equalizer %s", active ? "actived" : "deactivated");
 	}
-	equalizer.sample_rate = sample_rate;
 
-	// if (equalizer.handle) {
-	// 	esp_equalizer_process(equalizer.handle, buf, bytes, sample_rate, 2);
-	// }
-
-	// if (biquad_lpf_process) {
-	// 	biquad_i16(buf, bytes, biquad_lpf_coeffs, biquad_lpf_w, 0);
-	// }
+	if (equalizer.handle) {
+		esp_equalizer_process(equalizer.handle, buf, bytes, equalizer.samplerate, 2);
+	}
+// #endif    
 }
+
 
 /****************************************************************************************
  * Solver to calculate the real gains to match the set values
@@ -939,3 +1095,4 @@ __attribute__((optimize("O2"))) void equlizer_biquad_gen_hpf1_f32(float *coeffs,
 
 
 #pragma GCC pop_options
+        

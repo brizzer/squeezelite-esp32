@@ -33,8 +33,12 @@ typedef struct {
 // int equalizer_get_config_value_int(char *config_name);
 
 void equalizer_init(void);
-void equalizer_open(u32_t sample_rate);
 void equalizer_close(void);
+void equalizer_set_samplerate(uint32_t samplerate);
+void equalizer_set_gain(int8_t *gain);
+void equalizer_set_loudness(u8_t loudness);
+void equalizer_set_volume(unsigned left, unsigned right);
+void equalizer_process(uint8_t *buf, uint32_t bytes);
 void equalizer_update(s8_t *gain);
 void equalizer_process(u8_t *buf, u32_t bytes, u32_t sample_rate);
 void equalizer_set_loudness(unsigned int left, unsigned int right);

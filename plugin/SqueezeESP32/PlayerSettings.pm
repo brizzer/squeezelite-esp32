@@ -7,6 +7,7 @@ use List::Util qw(first min max);
 
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
+use Slim::Utils::Strings qw(string cstring);
 
 my $sprefs = preferences('server');
 my $prefs = preferences('plugin.squeezeesp32');
@@ -33,6 +34,7 @@ sub prefs {
 	my ($class, $client) = @_;
 	my @prefs;
 	push @prefs, qw(width small_VU) if $client->displayWidth;
+	push @prefs, qw(led_config led_visualizer led_brightness);# if $client->hasLED;
 	return ($prefs->client($client), @prefs);
 }
 
@@ -85,6 +87,14 @@ sub handler {
 			$equalizer = [ splice(@$equalizer, 0, 10) ];
 			$cprefs->set('equalizer', $equalizer);
 			$client->update_tones($equalizer);
+            
+            $cprefs->set('loudness', $paramRef->{"pref_loudness"} || 0);
+		}
+
+		if ($client->hasLED) {
+			$cprefs->set('led_visualizer', $paramRef->{'pref_led_visualizer'} || 0);
+			$cprefs->set('led_brightness', $paramRef->{'pref_led_brightness'} || 20);
+			Plugins::SqueezeESP32::RgbLed::updateLED($client);
 		}
 	}
 
@@ -95,7 +105,14 @@ sub handler {
 		$paramRef->{'pref_artwork'} = $cprefs->get('artwork');
 	}
 
-	$paramRef->{'pref_equalizer'} = $cprefs->get('equalizer') if $client->can('depth') &&  $client->depth == 16;
+	if ($client->hasLED) {
+		$paramRef->{'ledVisualModes'} = Plugins::SqueezeESP32::RgbLed::ledVisualModeOptions($client);
+	}
+
+    if ($client->can('depth') &&  $client->depth == 16) {      
+        $paramRef->{'pref_equalizer'} = $cprefs->get('equalizer');
+        $paramRef->{'pref_loudness'} = $cprefs->get('loudness');
+    }
 	$paramRef->{'player_ip'} = $client->ip;
 
 	require Plugins::SqueezeESP32::FirmwareHelper;

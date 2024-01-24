@@ -21,6 +21,18 @@
 				params: ['[% playerid %]', ['squeezeesp32', 'seteq', eqValues.join()]]
 			});
 		}
+		
+		var ldValue;
+		this.lastLd = this.lastLd;
+		
+		ldValue = Ext.get('pref_loudness').dom.value || 0;
+		
+		if (ldValue != this.lastLd) {
+			this.lastLd = ldValue;
+			SqueezeJS.Controller.request({
+				params: ['[% playerid %]', ['squeezeesp32', 'setld', ldValue]]
+			});
+		}
 	}
 </script>
 [% END; ELSIF !useExtJS; pageHeaderScripts = BLOCK %]
@@ -43,6 +55,23 @@
 					id: 1,
 					method: 'slim.request',
 					params: ['[% playerid %]', ['squeezeesp32', 'seteq', eqValues.join()]]
+				})
+			});
+		}
+		
+		var ldValue;
+		this.lastLd = this.lastLd;
+		
+		ldValue = $('pref_loudness').value || 0;
+		
+		if (ldValue != this.lastLd) {
+			this.lastLd = ldValue;
+			new Ajax.Request('/jsonrpc.js', {
+				method: 'post',
+				postBody: JSON.stringify({
+					id: 1,
+					method: 'slim.request',
+					params: ['[% playerid %]', ['squeezeesp32', 'setld', ldValue]]
 				})
 			});
 		}
@@ -106,12 +135,44 @@
 		<hr>
 	[% END %]
 
+	[% IF prefs.pref_led_config %]
+		[% WRAPPER setting title="PLUGIN_SQUEEZEESP32_LED_CONFIG" desc="PLUGIN_SQUEEZEESP32_LED_CONFIG_DESC" %]
+			<!--<input type="text" readonly class="stdedit" name="pref_led_config" id="led_config" value="[% prefs.pref_led_config %]" size="3">-->
+			<input type="hidden" name="pref_led_config" value="[% prefs.pref_led_config %]">
+			[% prefs.pref_led_config %]
+		[% END %]
+		[% WRAPPER setting title="PLUGIN_SQUEEZEESP32_LED_VISUALIZER" desc="PLUGIN_SQUEEZEESP32_LED_VISUALIZER_DESC" %]
+			<select class="stdedit" name="pref_led_visualizer" id="led_visualizer">
+				[% num = 1 %][% last = 1 %]
+				[% FOREACH option = ledVisualModes.keys.nsort %]
+					<option [% IF prefs.pref_led_visualizer == option %]selected [% ELSIF num == 1 && option == '-1' %]selected [% END %]value="[% option %]">[% ledVisualModes.$option %]</option>
+				[%- END -%]
+			</select>
+		[% END %]
+		[% WRAPPER setting title="PLUGIN_SQUEEZEESP32_LED_BRIGHTNESS" desc="PLUGIN_SQUEEZEESP32_LED_BRIGHTNESS_DESC" %]
+			<input type="text" class="stdedit sliderInput_0_255" name="pref_led_brightness" id="led_brightness" value="[% prefs.pref_led_brightness %]" size="2">
+		[% END %]
+		
+		[% WRAPPER setting title="PLUGIN_SQUEEZEESP32_LED_DATA" desc="PLUGIN_SQUEEZEESP32_LED_DATA_DESC" %]
+			<input type="button" name="led_data_send" onclick="SqueezeJS.Controller.request({params: ['[% playerid %]', ['dmx', document.getElementById('led_data_cmd').value, document.getElementById('led_data_x').value]] });" value="[% "PLUGIN_SQUEEZEESP32_LED_DATA_SEND" | string %]">&nbsp;
+			[% "PLUGIN_SQUEEZEESP32_LED_DATA_X" | string %]&nbsp
+			<input type="text" class="stdedit" name="pref_led_data_x" id="led_data_x" value="0" size="2">
+			[% "PLUGIN_SQUEEZEESP32_LED_DATA_CMD" | string %]&nbsp
+			<input type="text" class="stdedit" name="pref_led_data_cmd" id="led_data_cmd" value="80,0,0,0,80,0,0,0,80" size="50">
+		[% END %]
+		<hr>
+	[% END %]
+	
 	[% IF pref_equalizer %]
 		[% WRAPPER setting title="PLUGIN_SQUEEZEESP32_EQUALIZER" desc="" %]
 			<div>[% "PLUGIN_SQUEEZEESP32_EQUALIZER_SAVE" | string %]</div>
 		[% END %]
 
 		[% WRAPPER settingSection %]
+			[% WRAPPER settingGroup title='Loudness' desc="" %]
+				<input type="text" class="stdedit sliderInput_0_10" name="pref_loudness" id="pref_loudness" value="[% pref_loudness || 0 %]" size="2"">
+			[% END %]			
+			
 			[% WRAPPER settingGroup title='31Hz' desc="" %]
 				<input type="text" class="stdedit sliderInput_-13_20" name="pref_equalizer.0" id="pref_equalizer.0" value="[% pref_equalizer.0 || 0 %]" size="2"">
 			[% END %]

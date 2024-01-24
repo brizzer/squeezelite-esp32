@@ -34,6 +34,10 @@ $prefs->setChange(sub {
 	$_[2]->send_equalizer;
 }, 'equalizer');
 
+$prefs->setChange(sub {
+	$_[2]->send_loudness;
+}, 'loudness');
+
 sub initPlugin {
 	my $class = shift;
 
@@ -54,11 +58,15 @@ sub initPlugin {
 
 	# register a command to set the EQ - without saving the values! Send params as single comma separated list of values
 	Slim::Control::Request::addDispatch(['squeezeesp32', 'seteq', '_eq'], [1, 0, 0, \&setEQ]);
+    Slim::Control::Request::addDispatch(['squeezeesp32', 'setld', '_ld'], [1, 0, 0, \&setLD]);
 
 	# Note for some forgetful know-it-all: we need to wrap the callback to make it unique. Otherwise subscriptions would overwrite each other.
 	Slim::Control::Request::subscribe( sub { onNotification(@_) }, [ ['newmetadata'] ] );
 	Slim::Control::Request::subscribe( sub { onNotification(@_) }, [ ['playlist'], ['open', 'newsong'] ]);
 	Slim::Control::Request::subscribe( \&onStopClear, [ ['playlist'], ['stop', 'clear'] ]);
+
+	# Add menu item to extras
+	Slim::Buttons::Home::addSubMenu('PLUGINS', 'PLUGIN_SQUEEZEESP32',  { 'useMode'  => 'squeezeesp32_mode', });
 }
 
 sub onStopClear {
@@ -98,6 +106,22 @@ sub setEQ {
 	}
 
 	$client->send_equalizer(\@eqParams);
+}
+
+sub setLD {
+	my $request = shift;
+
+	# check this is the correct command.
+	if ($request->isNotCommand([['squeezeesp32'],['setld']])) {
+		$request->setStatusBadDispatch();
+		return;
+	}
+
+	# get our parameters
+	my $client   = $request->client();
+    my $loudness = $request->getParam('_ld') || 0;
+
+	$client->send_loudness($loudness);
 }
 
 1;

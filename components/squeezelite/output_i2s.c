@@ -41,6 +41,7 @@ sure that using rate_delay would fix that
 #include "adac.h"
 #include "time.h"
 #include "led.h"
+#include "services.h"
 #include "monitor.h"
 #include "platform_config.h"
 #include "gpio_exp.h"
@@ -54,9 +55,22 @@ sure that using rate_delay would fix that
 #define FRAME_BLOCK MAX_SILENCE_FRAMES
 #define SPDIF_BLOCK	256
 
-// must have an integer ratio with FRAME_BLOCK (see spdif comment)
-#define DMA_BUF_LEN		512	
+/* we produce FRAME_BLOCK (2048) per loop of the i2s thread so it's better if they fit
+ * inside a set of DMA buffer nicely, i.e. DMA_BUF_FRAMES * DMA_BUF_COUNT is a multiple 
+ * of FRAME_BLOCK so that each DMA buffer is filled and we fully empty a FRAME_BLOCK at 
+ * each loop. Because one DMA buffer in esp32 is 4092 or below, when using 16 bits 
+ * samples and 2 channels, the best multiple is 512 (512*2*2=2048) and we use 6 of these.
+ * In SPDIF, as we virtually use 32 bits per sample, the next proper multiple would
+ * be 256 but such DMA buffers are too small and this causes stuttering. So we will use
+ * non-multiples which means that at every loop one DMA buffer will be not fully filled. 
+ * At least, let's make sure it's not a too small amount of samples so 450*4*2=3600 fits 
+ * nicely in one DMA buffer and 2048/450 = 4 buffers + ~1/2 buffer which is acceptable.
+ */
+#define DMA_BUF_FRAMES	512
 #define DMA_BUF_COUNT	12
+
+#define DMA_BUF_FRAMES_SPDIF	450
+#define DMA_BUF_COUNT_SPDIF     7
 
 #define DECLARE_ALL_MIN_MAX 	\
 	DECLARE_MIN_MAX(o); 		\
@@ -73,7 +87,7 @@ sure that using rate_delay would fix that
 	RESET_MIN_MAX(buffering);
 	
 #define STATS_PERIOD_MS 5000
-#define STAT_STACK_SIZE	(3*1024)
+static void (*pseudo_idle_chain)(uint32_t now);
 
 #ifndef CONFIG_AMP_GPIO_LEVEL
 #define CONFIG_AMP_GPIO_LEVEL 1
@@ -89,6 +103,8 @@ const struct adac_s *adac = &dac_external;
 
 static log_level loglevel;
 
+static uint32_t i2s_idle_since;
+static void (*pseudo_idle_chain)(uint32_t);
 static bool (*slimp_handler_chain)(u8_t *data, int len);
 static bool jack_mutes_amp;
 static bool running, isI2SStarted, ended;
@@ -98,11 +114,9 @@ static frames_t oframes;
 static struct {
 	bool enabled;
 	u8_t *buf;
-	size_t count;
 } spdif;
 static size_t dma_buf_frames;
-static TaskHandle_t stats_task, output_i2s_task;
-static bool stats;
+static TaskHandle_t output_i2s_task;
 static struct {
 	int gpio, active;
 } amp_control = { CONFIG_AMP_GPIO, CONFIG_AMP_GPIO_LEVEL },
@@ -119,8 +133,9 @@ DECLARE_ALL_MIN_MAX;
 static int _i2s_write_frames(frames_t out_frames, bool silence, s32_t gainL, s32_t gainR, u8_t flags,
 								s32_t cross_gain_in, s32_t cross_gain_out, ISAMPLE_T **cross_ptr);
 static void output_thread_i2s(void *arg);
-static void output_thread_i2s_stats(void *arg);
-static void spdif_convert(ISAMPLE_T *src, size_t frames, u32_t *dst, size_t *count);
+static void i2s_stats(uint32_t now);
+
+static void spdif_convert(ISAMPLE_T *src, size_t frames, u32_t *dst);
 static void (*jack_handler_chain)(bool inserted);
 
 #define I2C_PORT	0
@@ -193,6 +208,13 @@ static void set_amp_gpio(int gpio, char *value) {
 #endif
 
 /****************************************************************************************
+ * Get inactivity callback
+ */
+static uint32_t i2s_idle_callback(void) {
+    return output.state <= OUTPUT_STOPPED ? pdTICKS_TO_MS(xTaskGetTickCount()) - i2s_idle_since : 0;
+}
+
+/****************************************************************************************
  * Set pin from config string
  */
 static void set_i2s_pin(char *config, i2s_pin_config_t *pin_config) {
@@ -263,8 +285,6 @@ void output_init_i2s(log_level level, char *device, unsigned output_buf_size, ch
         return;
     }
     
-	/* BEWARE: i2s.c must be patched otherwise L/R are swapped in 32 bits mode */
-	 
 	// common I2S initialization
 	i2s_config.mode = I2S_MODE_MASTER | I2S_MODE_TX;
 	i2s_config.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
@@ -275,6 +295,8 @@ void output_init_i2s(log_level level, char *device, unsigned output_buf_size, ch
     i2s_config.use_apll = true;
 #endif 
 	i2s_config.intr_alloc_flags = ESP_INTR_FLAG_LEVEL1; //Interrupt level 1
+    i2s_config.dma_buf_len = DMA_BUF_FRAMES;	
+	i2s_config.dma_buf_count = DMA_BUF_COUNT;
 	
 	if (strcasestr(device, "spdif")) {
 		spdif.enabled = true;	
@@ -291,14 +313,14 @@ void output_init_i2s(log_level level, char *device, unsigned output_buf_size, ch
 		i2s_config.sample_rate = output.current_sample_rate * 2;
 		i2s_config.bits_per_sample = 32;
 		// Normally counted in frames, but 16 sample are transformed into 32 bits in spdif
-		i2s_config.dma_buf_len = DMA_BUF_LEN / 2;	
-		i2s_config.dma_buf_count = DMA_BUF_COUNT * 2;
+		i2s_config.dma_buf_len = DMA_BUF_FRAMES_SPDIF;	
+		i2s_config.dma_buf_count = DMA_BUF_COUNT_SPDIF;
 		/* 
 		   In DMA, we have room for (LEN * COUNT) frames of 32 bits samples that 
 		   we push at sample_rate * 2. Each of these pseudo-frames is a single true
 		   audio frame. So the real depth in true frames is (LEN * COUNT / 2)
 		*/   
-		dma_buf_frames = DMA_BUF_COUNT * DMA_BUF_LEN / 2;	
+		dma_buf_frames = i2s_config.dma_buf_len * i2s_config.dma_buf_count / 2;	
 		
 		// silence DAC output if sharing the same ws/bck
 		if (i2s_dac_pin.ws_io_num == i2s_spdif_pin.ws_io_num && i2s_dac_pin.bck_io_num == i2s_spdif_pin.bck_io_num)	silent_do = i2s_dac_pin.data_out_num;		
@@ -310,9 +332,9 @@ void output_init_i2s(log_level level, char *device, unsigned output_buf_size, ch
 		i2s_config.sample_rate = output.current_sample_rate;
 		i2s_config.bits_per_sample = BYTES_PER_FRAME * 8 / 2;
 		// Counted in frames (but i2s allocates a buffer <= 4092 bytes)
-		i2s_config.dma_buf_len = DMA_BUF_LEN;	
+		i2s_config.dma_buf_len = DMA_BUF_FRAMES;	
 		i2s_config.dma_buf_count = DMA_BUF_COUNT;
-		dma_buf_frames = DMA_BUF_COUNT * DMA_BUF_LEN;	
+		dma_buf_frames = i2s_config.dma_buf_len * i2s_config.dma_buf_count;
 		
 		// silence SPDIF output
 		silent_do = i2s_spdif_pin.data_out_num;		
@@ -388,6 +410,8 @@ void output_init_i2s(log_level level, char *device, unsigned output_buf_size, ch
 	i2s_stop(CONFIG_I2S_NUM);
 	i2s_zero_dma_buffer(CONFIG_I2S_NUM);
 	isI2SStarted=false;
+    
+    equalizer_set_samplerate(output.current_sample_rate);
 	
 	adac->power(ADAC_STANDBY);
 
@@ -409,7 +433,19 @@ void output_init_i2s(log_level level, char *device, unsigned output_buf_size, ch
 	else adac->speaker(true);
 	
 	adac->headset(jack_inserted_svc());	
+    
+    // do we want stats
+	p = config_alloc_get_default(NVS_TYPE_STR, "stats", "n", 0);
+	if (p && (*p == '1' || *p == 'Y' || *p == 'y')) {
+        pseudo_idle_chain = pseudo_idle_svc;
+        pseudo_idle_svc = i2s_stats;
+    }
+    free(p);
 
+    // register a callback for inactivity
+    i2s_idle_since = pdTICKS_TO_MS(xTaskGetTickCount());    
+    services_sleep_setsleeper(i2s_idle_callback);
+    
 	// create task as a FreeRTOS task but uses stack in internal RAM
 	{
 		static DRAM_ATTR StaticTask_t xTaskBuffer __attribute__ ((aligned (4)));
@@ -417,22 +453,7 @@ void output_init_i2s(log_level level, char *device, unsigned output_buf_size, ch
 		output_i2s_task = xTaskCreateStaticPinnedToCore( (TaskFunction_t) output_thread_i2s, "output_i2s", OUTPUT_THREAD_STACK_SIZE, 
 											  NULL, CONFIG_ESP32_PTHREAD_TASK_PRIO_DEFAULT + 1, xStack, &xTaskBuffer, 0 );
 	}
-	
-	// do we want stats
-	p = config_alloc_get_default(NVS_TYPE_STR, "stats", "n", 0);
-	stats = p && (*p == '1' || *p == 'Y' || *p == 'y');
-	free(p);
-	
-	// memory still used but at least task is not created
-	if (stats) {
-		// we allocate TCB but stack is static to avoid SPIRAM fragmentation
-		StaticTask_t* xTaskBuffer = (StaticTask_t*) heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-		static EXT_RAM_ATTR StackType_t xStack[STAT_STACK_SIZE] __attribute__ ((aligned (4)));
-		stats_task = xTaskCreateStatic( (TaskFunction_t) output_thread_i2s_stats, "output_i2s_sts", STAT_STACK_SIZE, 
-										 NULL, ESP_TASK_PRIO_MIN, xStack, xTaskBuffer);
-	}	
 }
-
 
 /****************************************************************************************
  * Terminate DAC output
@@ -443,7 +464,6 @@ void output_close_i2s(void) {
 	UNLOCK;
 	
 	while (!ended) vTaskDelay(20 / portTICK_PERIOD_MS);
-	if (stats) vTaskDelete(stats_task);
 	
 	i2s_driver_uninstall(CONFIG_I2S_NUM);
 	free(obuf);
@@ -490,8 +510,8 @@ static int _i2s_write_frames(frames_t out_frames, bool silence, s32_t gainL, s32
 		memcpy(obuf + oframes * BYTES_PER_FRAME, silencebuf, out_frames * BYTES_PER_FRAME);
 	}
 
-	// don't update visu if we don't have enough data in buffer
-	if (silence || output.external || _buf_used(outputbuf) > outputbuf->size >> 2 ) {
+	// don't update visu if we don't have enough data in buffer (500 ms)
+	if (silence || _buf_used(outputbuf) >  BYTES_PER_FRAME * output.current_sample_rate / 2) {
 		output_visu_export(obuf + oframes * BYTES_PER_FRAME, out_frames, output.current_sample_rate, silence, (gainL + gainR) / 2);
 	}
 		
@@ -511,7 +531,7 @@ static void output_thread_i2s(void *arg) {
 	uint32_t fullness = gettime_ms();
 	bool synced;
 	output_state state = OUTPUT_OFF - 1;
-	
+        
 	while (running) {
 			
 		TIME_MEASUREMENT_START(timer_start);
@@ -526,6 +546,7 @@ static void output_thread_i2s(void *arg) {
 				if (amp_control.gpio != -1) gpio_set_level_x(amp_control.gpio, !amp_control.active);
 				LOG_INFO("switching off amp GPIO %d", amp_control.gpio);
 			} else if (output.state == OUTPUT_STOPPED) {
+                i2s_idle_since = pdTICKS_TO_MS(xTaskGetTickCount());
 				adac->speaker(false);
 				led_blink(LED_GREEN, 200, 1000);
 			} else if (output.state == OUTPUT_RUNNING) {
@@ -544,7 +565,6 @@ static void output_thread_i2s(void *arg) {
 				isI2SStarted = false;
 				i2s_stop(CONFIG_I2S_NUM);
 				adac->power(ADAC_STANDBY);
-				spdif.count = 0;
 			}
 			usleep(100000);
 			continue;
@@ -557,10 +577,11 @@ static void output_thread_i2s(void *arg) {
 		output.frames_played_dmp = output.frames_played;
 		// try to estimate how much we have consumed from the DMA buffer (calculation is incorrect at the very beginning ...)
 		output.device_frames = dma_buf_frames - ((output.updated - fullness) * output.current_sample_rate) / 1000;
+        // we'll try to produce iframes if we have any, but we might return less if outpuf does not have enough
 		_output_frames( iframes );
 		// oframes must be a global updated by the write callback
 		output.frames_in_process = oframes;
-						
+              						
 		SET_MIN_MAX_SIZED(oframes,rec,iframes);
 		SET_MIN_MAX_SIZED(_buf_used(outputbuf),o,outputbuf->size);
 		SET_MIN_MAX_SIZED(_buf_used(streambuf),s,streambuf->size);
@@ -573,12 +594,12 @@ static void output_thread_i2s(void *arg) {
 			discard = output.frames_played_dmp ? 0 : output.device_frames;
 			synced = true;
 		} else if (discard) {
-			discard -= oframes;
-			iframes = discard ? min(FRAME_BLOCK, discard) : FRAME_BLOCK;
+            discard -= min(oframes, discard);
+            iframes = discard ? min(FRAME_BLOCK, discard) : FRAME_BLOCK;
 			UNLOCK;
 			continue;
 		}
-		
+
 		UNLOCK;
 				
 		// now send all the data
@@ -590,8 +611,9 @@ static void output_thread_i2s(void *arg) {
 			i2s_zero_dma_buffer(CONFIG_I2S_NUM);
 			i2s_start(CONFIG_I2S_NUM);
 			adac->power(ADAC_ON);	
+            if (spdif.enabled) spdif_convert(NULL, 0, NULL);
 		} 
-		
+
 		// this does not work well as set_sample_rates resets the fifos (and it's too early)
 		if (i2s_config.sample_rate != output.current_sample_rate) {
 			LOG_INFO("changing sampling rate %u to %u", i2s_config.sample_rate, output.current_sample_rate);
@@ -606,16 +628,11 @@ static void output_thread_i2s(void *arg) {
 			i2s_set_sample_rates(CONFIG_I2S_NUM, spdif.enabled ? i2s_config.sample_rate * 2 : i2s_config.sample_rate);
 			i2s_zero_dma_buffer(CONFIG_I2S_NUM);
 
-#if BYTES_PER_FRAME == 4		
-			equalizer_close();
-			equalizer_open(output.current_sample_rate);
-#endif			
+            equalizer_set_samplerate(output.current_sample_rate);
 		}
 		
-#if BYTES_PER_FRAME == 4		
 		// run equalizer
-		equalizer_process(obuf, oframes * BYTES_PER_FRAME, output.current_sample_rate);
-#endif		
+		equalizer_process(obuf, oframes * BYTES_PER_FRAME);
 
 		// we assume that here we have been able to entirely fill the DMA buffers
 		if (spdif.enabled) {
@@ -624,11 +641,11 @@ static void output_thread_i2s(void *arg) {
 			// need IRAM for speed but can't allocate a FRAME_BLOCK * 16, so process by smaller chunks
 			while (count < oframes) {
 				size_t chunk = min(SPDIF_BLOCK, oframes - count);
-				spdif_convert((ISAMPLE_T*) obuf + count * 2, chunk, (u32_t*) spdif.buf, &spdif.count);
+                spdif_convert((ISAMPLE_T*) obuf + count * 2, chunk, (u32_t*) spdif.buf);              
 				i2s_write(CONFIG_I2S_NUM, spdif.buf, chunk * 16, &obytes, portMAX_DELAY);
 				bytes += obytes / (16 / BYTES_PER_FRAME);
 				count += chunk;
-			}	
+			}
 #if BYTES_PER_FRAME == 4		
 		} else if (i2s_config.bits_per_sample == 32) {  
 			i2s_write_expand(CONFIG_I2S_NUM, obuf, oframes * BYTES_PER_FRAME, 16, 32, &bytes, portMAX_DELAY);
@@ -654,153 +671,158 @@ static void output_thread_i2s(void *arg) {
 }
 
 /****************************************************************************************
- * Stats output thread
+ * stats output callback
  */
-static void output_thread_i2s_stats(void *arg) {
-	while (1) {
-		// no need to lock
-		output_state state = output.state;
-		
-		if(stats && state>OUTPUT_STOPPED){
-			LOG_INFO( "Output State: %d, current sample rate: %d, bytes per frame: %d",state,output.current_sample_rate, BYTES_PER_FRAME);
-			LOG_INFO( LINE_MIN_MAX_FORMAT_HEAD1);
-			LOG_INFO( LINE_MIN_MAX_FORMAT_HEAD2);
-			LOG_INFO( LINE_MIN_MAX_FORMAT_HEAD3);
-			LOG_INFO( LINE_MIN_MAX_FORMAT_HEAD4);
-			LOG_INFO(LINE_MIN_MAX_FORMAT_STREAM, LINE_MIN_MAX_STREAM("stream",s));
-			LOG_INFO(LINE_MIN_MAX_FORMAT,LINE_MIN_MAX("output",o));
-			LOG_INFO(LINE_MIN_MAX_FORMAT_FOOTER);
-			LOG_INFO(LINE_MIN_MAX_FORMAT,LINE_MIN_MAX("received",rec));
-			LOG_INFO(LINE_MIN_MAX_FORMAT_FOOTER);
-			LOG_INFO("");
-			LOG_INFO("              ----------+----------+-----------+-----------+  ");
-			LOG_INFO("              max (us)  | min (us) |   avg(us) |  count    |  ");
-			LOG_INFO("              ----------+----------+-----------+-----------+  ");
-			LOG_INFO(LINE_MIN_MAX_DURATION_FORMAT,LINE_MIN_MAX_DURATION("Buffering(us)",buffering));
-			LOG_INFO(LINE_MIN_MAX_DURATION_FORMAT,LINE_MIN_MAX_DURATION("i2s tfr(us)",i2s_time));
-			LOG_INFO("              ----------+----------+-----------+-----------+");
-			RESET_ALL_MIN_MAX;
-		}
-		vTaskDelay( pdMS_TO_TICKS( STATS_PERIOD_MS ) );
-	}
+static void i2s_stats(uint32_t now) {
+    static uint32_t last;
+    
+    // first chain to next handler
+    if (pseudo_idle_chain) pseudo_idle_chain(now);
+    
+    // then see if we need to act
+    if (output.state <= OUTPUT_STOPPED || now < last + STATS_PERIOD_MS) return;  
+    last = now;
+
+	LOG_INFO( "Output State: %d, current sample rate: %d, bytes per frame: %d", output.state, output.current_sample_rate, BYTES_PER_FRAME);
+	LOG_INFO( LINE_MIN_MAX_FORMAT_HEAD1);
+	LOG_INFO( LINE_MIN_MAX_FORMAT_HEAD2);
+	LOG_INFO( LINE_MIN_MAX_FORMAT_HEAD3);
+	LOG_INFO( LINE_MIN_MAX_FORMAT_HEAD4);
+	LOG_INFO(LINE_MIN_MAX_FORMAT_STREAM, LINE_MIN_MAX_STREAM("stream",s));
+	LOG_INFO(LINE_MIN_MAX_FORMAT,LINE_MIN_MAX("output",o));
+	LOG_INFO(LINE_MIN_MAX_FORMAT_FOOTER);
+	LOG_INFO(LINE_MIN_MAX_FORMAT,LINE_MIN_MAX("received",rec));
+	LOG_INFO(LINE_MIN_MAX_FORMAT_FOOTER);
+	LOG_INFO("");
+	LOG_INFO("              ----------+----------+-----------+-----------+  ");
+	LOG_INFO("              max (us)  | min (us) |   avg(us) |  count    |  ");
+	LOG_INFO("              ----------+----------+-----------+-----------+  ");
+	LOG_INFO(LINE_MIN_MAX_DURATION_FORMAT,LINE_MIN_MAX_DURATION("Buffering(us)",buffering));
+	LOG_INFO(LINE_MIN_MAX_DURATION_FORMAT,LINE_MIN_MAX_DURATION("i2s tfr(us)",i2s_time));
+	LOG_INFO("              ----------+----------+-----------+-----------+");
+	RESET_ALL_MIN_MAX;
 }
 
 /****************************************************************************************
  * SPDIF support
  */
- 
 #define PREAMBLE_B  (0xE8) //11101000
 #define PREAMBLE_M  (0xE2) //11100010
 #define PREAMBLE_W  (0xE4) //11100100
 
-#define VUCP   		((0xCC) << 24)
-#define VUCP_MUTE 	((0xD4) << 24)	// To mute PCM, set VUCP = invalid.
+static const u8_t VUCP24[2] = { 0xCC, 0x32 };
 
-static const u16_t spdif_bmclookup[256] = { //biphase mark encoded values (least significant bit first)
-	0xcccc, 0x4ccc, 0x2ccc, 0xaccc, 0x34cc, 0xb4cc, 0xd4cc, 0x54cc,
-	0x32cc, 0xb2cc, 0xd2cc, 0x52cc, 0xcacc, 0x4acc, 0x2acc, 0xaacc,
-	0x334c, 0xb34c, 0xd34c, 0x534c, 0xcb4c, 0x4b4c, 0x2b4c, 0xab4c,
-	0xcd4c, 0x4d4c, 0x2d4c, 0xad4c, 0x354c, 0xb54c, 0xd54c, 0x554c,
-	0x332c, 0xb32c, 0xd32c, 0x532c, 0xcb2c, 0x4b2c, 0x2b2c, 0xab2c,
-	0xcd2c, 0x4d2c, 0x2d2c, 0xad2c, 0x352c, 0xb52c, 0xd52c, 0x552c,
-	0xccac, 0x4cac, 0x2cac, 0xacac, 0x34ac, 0xb4ac, 0xd4ac, 0x54ac,
-	0x32ac, 0xb2ac, 0xd2ac, 0x52ac, 0xcaac, 0x4aac, 0x2aac, 0xaaac,
-	0x3334, 0xb334, 0xd334, 0x5334, 0xcb34, 0x4b34, 0x2b34, 0xab34,
-	0xcd34, 0x4d34, 0x2d34, 0xad34, 0x3534, 0xb534, 0xd534, 0x5534,
-	0xccb4, 0x4cb4, 0x2cb4, 0xacb4, 0x34b4, 0xb4b4, 0xd4b4, 0x54b4,
-	0x32b4, 0xb2b4, 0xd2b4, 0x52b4, 0xcab4, 0x4ab4, 0x2ab4, 0xaab4,
-	0xccd4, 0x4cd4, 0x2cd4, 0xacd4, 0x34d4, 0xb4d4, 0xd4d4, 0x54d4,
-	0x32d4, 0xb2d4, 0xd2d4, 0x52d4, 0xcad4, 0x4ad4, 0x2ad4, 0xaad4,
-	0x3354, 0xb354, 0xd354, 0x5354, 0xcb54, 0x4b54, 0x2b54, 0xab54,
-	0xcd54, 0x4d54, 0x2d54, 0xad54, 0x3554, 0xb554, 0xd554, 0x5554,
-	0x3332, 0xb332, 0xd332, 0x5332, 0xcb32, 0x4b32, 0x2b32, 0xab32,
-	0xcd32, 0x4d32, 0x2d32, 0xad32, 0x3532, 0xb532, 0xd532, 0x5532,
-	0xccb2, 0x4cb2, 0x2cb2, 0xacb2, 0x34b2, 0xb4b2, 0xd4b2, 0x54b2,
-	0x32b2, 0xb2b2, 0xd2b2, 0x52b2, 0xcab2, 0x4ab2, 0x2ab2, 0xaab2,
-	0xccd2, 0x4cd2, 0x2cd2, 0xacd2, 0x34d2, 0xb4d2, 0xd4d2, 0x54d2,
-	0x32d2, 0xb2d2, 0xd2d2, 0x52d2, 0xcad2, 0x4ad2, 0x2ad2, 0xaad2,
-	0x3352, 0xb352, 0xd352, 0x5352, 0xcb52, 0x4b52, 0x2b52, 0xab52,
-	0xcd52, 0x4d52, 0x2d52, 0xad52, 0x3552, 0xb552, 0xd552, 0x5552,
-	0xccca, 0x4cca, 0x2cca, 0xacca, 0x34ca, 0xb4ca, 0xd4ca, 0x54ca,
-	0x32ca, 0xb2ca, 0xd2ca, 0x52ca, 0xcaca, 0x4aca, 0x2aca, 0xaaca,
-	0x334a, 0xb34a, 0xd34a, 0x534a, 0xcb4a, 0x4b4a, 0x2b4a, 0xab4a,
-	0xcd4a, 0x4d4a, 0x2d4a, 0xad4a, 0x354a, 0xb54a, 0xd54a, 0x554a,
-	0x332a, 0xb32a, 0xd32a, 0x532a, 0xcb2a, 0x4b2a, 0x2b2a, 0xab2a,
-	0xcd2a, 0x4d2a, 0x2d2a, 0xad2a, 0x352a, 0xb52a, 0xd52a, 0x552a,
-	0xccaa, 0x4caa, 0x2caa, 0xacaa, 0x34aa, 0xb4aa, 0xd4aa, 0x54aa,
-	0x32aa, 0xb2aa, 0xd2aa, 0x52aa, 0xcaaa, 0x4aaa, 0x2aaa, 0xaaaa
+static const u16_t spdif_bmclookup[256] = {
+	0xcccc, 0xb333, 0xd333, 0xaccc, 0xcb33, 0xb4cc, 0xd4cc, 0xab33, 
+	0xcd33, 0xb2cc, 0xd2cc, 0xad33, 0xcacc, 0xb533, 0xd533, 0xaacc, 
+	0xccb3, 0xb34c, 0xd34c, 0xacb3, 0xcb4c, 0xb4b3, 0xd4b3, 0xab4c, 
+	0xcd4c, 0xb2b3, 0xd2b3, 0xad4c, 0xcab3, 0xb54c, 0xd54c, 0xaab3, 
+	0xccd3, 0xb32c, 0xd32c, 0xacd3, 0xcb2c, 0xb4d3, 0xd4d3, 0xab2c, 
+	0xcd2c, 0xb2d3, 0xd2d3, 0xad2c, 0xcad3, 0xb52c, 0xd52c, 0xaad3, 
+	0xccac, 0xb353, 0xd353, 0xacac, 0xcb53, 0xb4ac, 0xd4ac, 0xab53, 
+	0xcd53, 0xb2ac, 0xd2ac, 0xad53, 0xcaac, 0xb553, 0xd553, 0xaaac, 
+	0xcccb, 0xb334, 0xd334, 0xaccb, 0xcb34, 0xb4cb, 0xd4cb, 0xab34, 
+	0xcd34, 0xb2cb, 0xd2cb, 0xad34, 0xcacb, 0xb534, 0xd534, 0xaacb, 
+	0xccb4, 0xb34b, 0xd34b, 0xacb4, 0xcb4b, 0xb4b4, 0xd4b4, 0xab4b, 
+	0xcd4b, 0xb2b4, 0xd2b4, 0xad4b, 0xcab4, 0xb54b, 0xd54b, 0xaab4, 
+	0xccd4, 0xb32b, 0xd32b, 0xacd4, 0xcb2b, 0xb4d4, 0xd4d4, 0xab2b, 
+	0xcd2b, 0xb2d4, 0xd2d4, 0xad2b, 0xcad4, 0xb52b, 0xd52b, 0xaad4, 
+	0xccab, 0xb354, 0xd354, 0xacab, 0xcb54, 0xb4ab, 0xd4ab, 0xab54, 
+	0xcd54, 0xb2ab, 0xd2ab, 0xad54, 0xcaab, 0xb554, 0xd554, 0xaaab, 
+	0xcccd, 0xb332, 0xd332, 0xaccd, 0xcb32, 0xb4cd, 0xd4cd, 0xab32, 
+	0xcd32, 0xb2cd, 0xd2cd, 0xad32, 0xcacd, 0xb532, 0xd532, 0xaacd, 
+	0xccb2, 0xb34d, 0xd34d, 0xacb2, 0xcb4d, 0xb4b2, 0xd4b2, 0xab4d, 
+	0xcd4d, 0xb2b2, 0xd2b2, 0xad4d, 0xcab2, 0xb54d, 0xd54d, 0xaab2, 
+	0xccd2, 0xb32d, 0xd32d, 0xacd2, 0xcb2d, 0xb4d2, 0xd4d2, 0xab2d, 
+	0xcd2d, 0xb2d2, 0xd2d2, 0xad2d, 0xcad2, 0xb52d, 0xd52d, 0xaad2, 
+	0xccad, 0xb352, 0xd352, 0xacad, 0xcb52, 0xb4ad, 0xd4ad, 0xab52, 
+	0xcd52, 0xb2ad, 0xd2ad, 0xad52, 0xcaad, 0xb552, 0xd552, 0xaaad, 
+	0xccca, 0xb335, 0xd335, 0xacca, 0xcb35, 0xb4ca, 0xd4ca, 0xab35, 
+	0xcd35, 0xb2ca, 0xd2ca, 0xad35, 0xcaca, 0xb535, 0xd535, 0xaaca, 
+	0xccb5, 0xb34a, 0xd34a, 0xacb5, 0xcb4a, 0xb4b5, 0xd4b5, 0xab4a, 
+	0xcd4a, 0xb2b5, 0xd2b5, 0xad4a, 0xcab5, 0xb54a, 0xd54a, 0xaab5, 
+	0xccd5, 0xb32a, 0xd32a, 0xacd5, 0xcb2a, 0xb4d5, 0xd4d5, 0xab2a, 
+	0xcd2a, 0xb2d5, 0xd2d5, 0xad2a, 0xcad5, 0xb52a, 0xd52a, 0xaad5, 
+	0xccaa, 0xb355, 0xd355, 0xacaa, 0xcb55, 0xb4aa, 0xd4aa, 0xab55, 
+	0xcd55, 0xb2aa, 0xd2aa, 0xad55, 0xcaaa, 0xb555, 0xd555, 0xaaaa	
 };
 
 /* 
  SPDIF is supposed to be (before BMC encoding, from LSB to MSB)				
-	PPPP AAAA  SSSS SSSS  SSSS SSSS  SSSS VUCP				
- after BMC encoding, each bits becomes 2 hence this becomes a 64 bits word. The
- the trick is to start not with a PPPP sequence but with an VUCP sequence to that
- the 16 bits samples are aligned with a BMC word boundary. Note that the LSB of the
- audio is transmitted first (not the MSB) and that ESP32 libray sends R then L, 
- contrary to what seems to be usually done, so (dst) order had to be changed
+    0....  1...   191..  0
+    BLFMRF MLFWRF MLFWRF BLFMRF (B,M,W=preamble-4, L/R=left/Right-24, F=Flags-4)
+    each xLF pattern is 32 bits 
+	PPPP AAAA  SSSS SSSS  SSSS SSSS  SSSS VUCP (P=preamble, A=auxiliary, S=sample-20bits, V=valid, U=user data, C=channel status, P=parity)
+ After BMC encoding, each bit becomes 2 hence this becomes a 64 bits word. The parity
+ is fixed by changing AAAA bits so that VUPC does not change. Then then trick is to 
+ start not with a PPPP sequence but with an VUCP sequence to that the 16 bits samples
+ are aligned with a BMC word boundary. Input buffer is left first => LRLR...
+ The I2S interface must output first the B/M/W preamble which means that second
+ 32 bits words must be first and so must be marked right channel. 
 */
-static void IRAM_ATTR spdif_convert(ISAMPLE_T *src, size_t frames, u32_t *dst, size_t *count) {
-	register u16_t hi, lo, aux;
-	size_t cnt = *count;
-	
+static void IRAM_ATTR spdif_convert(ISAMPLE_T *src, size_t frames, u32_t *dst) {
+    static u8_t vu, count;    
+	register u16_t hi, lo;
+#if BYTES_PER_FRAME == 8
+	register u16_t aux;
+#endif
+    
+    // we assume frame == 0 as well...
+    if (!src) {
+        count = 0;
+        vu = VUCP24[0];
+    }
+    
 	while (frames--) {
 		// start with left channel
 #if BYTES_PER_FRAME == 4		
-		hi  = spdif_bmclookup[(u8_t)(*src >> 8)];
-		lo  = spdif_bmclookup[(u8_t) *src++];
-		
-		// invert if last preceeding bit is 1
-		lo ^= ~((s16_t)hi) >> 16;
-		// first 16 bits
-		*dst++ = ((u32_t)lo << 16) | hi;		
-		aux = 0xb333 ^ (((u32_t)((s16_t)lo)) >> 17);
-#else
-		hi  = spdif_bmclookup[(u8_t)(*src >> 24)];
-		lo  = spdif_bmclookup[(u8_t)(*src >> 16)];
-		
-		// invert if last preceeding bit is 1
-		lo ^= ~((s16_t)hi) >> 16;
-		// first 16 bits
-		*dst++ = ((u32_t)lo << 16) | hi;		
-		// we use 20 bits samples as we need to force parity
-		aux = spdif_bmclookup[(u8_t)(*src++ >> 12)];
-		aux = (u8_t) (aux ^ (~((s16_t)lo) >> 16));
-		aux |= (0xb3 ^ (((u16_t)((s8_t)aux)) >> 9)) << 8;
-#endif	
-		
-		// VUCP-Bits: Valid, Subcode, Channelstatus, Parity = 0
-		// As parity is always 0, we can use fixed preambles
-		if (++cnt > 191) {
-			*dst++ =  VUCP | (PREAMBLE_B << 16 ) | aux; //special preamble for one of 192 frames
-			cnt = 0;
+		hi = spdif_bmclookup[(u8_t)(*src >> 8)];
+		lo = spdif_bmclookup[(u8_t)*src++];
+		if (lo & 1) hi = ~hi;
+
+        if (!count--) {            
+			*dst++ = (vu << 24) | (PREAMBLE_B << 16) | 0xCCCC;
+			count = 191;
 		} else {
-			*dst++ = VUCP | (PREAMBLE_M << 16) | aux;
+			*dst++ = (vu << 24) | (PREAMBLE_M << 16) | 0xCCCC;
 		}
+#else
+		hi = spdif_bmclookup[(u8_t)(*src >> 24)];
+		lo = spdif_bmclookup[(u8_t)(*src >> 16)];
+		aux = spdif_bmclookup[(u8_t)(*src++ >> 8)];
+		if (aux & 1) lo = ~lo;
+		if (lo & 1) hi = ~hi;
+
+
+        if (!count--) {
+			*dst++ = (vu << 24) | (PREAMBLE_B << 16) | aux;
+			count = 191;
+		} else {
+			*dst++ = (vu << 24) | (PREAMBLE_M << 16) | aux;
+		}
+#endif
+
+        vu = VUCP24[hi & 1];
+		*dst++ = ((u32_t)lo << 16) | hi;
 
 		// then do right channel, no need to check PREAMBLE_B
 #if BYTES_PER_FRAME == 4		
-		hi  = spdif_bmclookup[(u8_t)(*src >> 8)];
-		lo  = spdif_bmclookup[(u8_t) *src++];
-		lo ^= ~((s16_t)hi) >> 16;
-		*dst++ = ((u32_t)lo << 16) | hi;
-		aux = 0xb333 ^ (((u32_t)((s16_t)lo)) >> 17);
+		hi = spdif_bmclookup[(u8_t)(*src >> 8)];
+		lo = spdif_bmclookup[(u8_t)*src++];
+		if (lo & 1) hi = ~hi;
+
+		*dst++ = (vu << 24) | (PREAMBLE_W << 16) | 0xCCCC;
 #else
-		hi  = spdif_bmclookup[(u8_t)(*src >> 24)];
-		lo  = spdif_bmclookup[(u8_t)(*src >> 16)];
-		lo ^= ~((s16_t)hi) >> 16;
+		hi = spdif_bmclookup[(u8_t)(*src >> 24)];
+		lo = spdif_bmclookup[(u8_t)(*src >> 16)];
+		aux = spdif_bmclookup[(u8_t)(*src++ >> 8)];
+		if (aux & 1) lo = ~lo;
+		if (lo & 1) hi = ~hi;
+
+		*dst++ = (vu << 24) | (PREAMBLE_W << 16) | aux;
+#endif
+
+        vu = VUCP24[hi & 1];
 		*dst++ = ((u32_t)lo << 16) | hi;
-		aux = spdif_bmclookup[(u8_t)(*src++ >> 12)];
-		aux = (u8_t) (aux ^ (~((s16_t)lo) >> 16));
-		aux |= (0xb3 ^ (((u16_t)((s8_t)aux)) >> 9)) << 8;
-#endif	
-		*dst++ = VUCP | (PREAMBLE_W << 16) | aux;
 	}
-	
-	*count = cnt;
 }
-
-
-
-
-

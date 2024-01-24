@@ -13,8 +13,10 @@
 #include "WrappedSemaphore.h"  // for WrappedSemaphore
 
 #ifdef BELL_VORBIS_FLOAT
-#define VORBIS_SEEK(file, position) (ov_time_seek(file, (double)position / 1000))
-#define VORBIS_READ(file, buffer, bufferSize, section) (ov_read(file, buffer, bufferSize, 0, 2, 1, section))
+#define VORBIS_SEEK(file, position) \
+  (ov_time_seek(file, (double)position / 1000))
+#define VORBIS_READ(file, buffer, bufferSize, section) \
+  (ov_read(file, buffer, bufferSize, 0, 2, 1, section))
 #else
 #define VORBIS_SEEK(file, position) (ov_time_seek(file, position))
 #define VORBIS_READ(file, buffer, bufferSize, section) \
@@ -68,6 +70,7 @@ TrackPlayer::TrackPlayer(std::shared_ptr<cspot::Context> ctx,
 
 TrackPlayer::~TrackPlayer() {
   isRunning = false;
+  resetState();
   std::scoped_lock lock(runningMutex);
 }
 
@@ -84,10 +87,11 @@ void TrackPlayer::stop() {
   std::scoped_lock lock(runningMutex);
 }
 
-void TrackPlayer::resetState() {
+void TrackPlayer::resetState(bool paused) {
   // Mark for reset
   this->pendingReset = true;
   this->currentSongPlaying = false;
+  this->startPaused = paused;
 
   std::scoped_lock lock(dataOutMutex);
 
@@ -116,7 +120,7 @@ void TrackPlayer::runTask() {
   while (isRunning) {
     // Ensure we even have any tracks to play
     if (!this->trackQueue->hasTracks() ||
-        (endOfQueueReached && trackQueue->isFinished())) {
+        (!pendingReset && endOfQueueReached && trackQueue->isFinished())) {
       this->trackQueue->playableSemaphore->twait(300);
       continue;
     }
@@ -181,7 +185,8 @@ void TrackPlayer::runTask() {
       }
 
       if (trackOffset == 0 && pendingSeekPositionMs == 0) {
-        this->trackLoaded(track);
+        this->trackLoaded(track, startPaused);
+        startPaused = false;
       }
 
       int32_t r =
@@ -196,6 +201,7 @@ void TrackPlayer::runTask() {
       }
 
       eof = false;
+      track->loading = true;
 
       CSPOT_LOG(info, "Playing");
 
@@ -233,8 +239,8 @@ void TrackPlayer::runTask() {
                 if (!currentSongPlaying || pendingReset)
                   break;
 
-                written =
-                    dataCallback(pcmBuffer.data() + (ret - toWrite), toWrite, track->identifier);
+                written = dataCallback(pcmBuffer.data() + (ret - toWrite),
+                                       toWrite, track->identifier);
               }
               if (written == 0) {
                 BELL_SLEEP_MS(50);
@@ -250,6 +256,7 @@ void TrackPlayer::runTask() {
 
       // always move back to LOADING (ensure proper seeking after last track has been loaded)
       currentTrackStream = nullptr;
+      track->loading = false;
     }
 
     if (eof) {

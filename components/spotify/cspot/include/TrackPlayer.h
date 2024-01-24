@@ -32,10 +32,11 @@ struct TrackReference;
 class TrackPlayer : bell::Task {
  public:
   // Callback types
-  typedef std::function<void(std::shared_ptr<QueuedTrack>)> TrackLoadedCallback;
-  typedef std::function<size_t(uint8_t*, size_t, std::string_view)> DataCallback;
+  typedef std::function<void(std::shared_ptr<QueuedTrack>, bool)>
+      TrackLoadedCallback;
+  typedef std::function<size_t(uint8_t*, size_t, std::string_view)>
+      DataCallback;
   typedef std::function<void()> EOFCallback;
-  typedef std::function<bool()> isAiringCallback;
 
   TrackPlayer(std::shared_ptr<cspot::Context> ctx,
               std::shared_ptr<cspot::TrackQueue> trackQueue,
@@ -48,7 +49,7 @@ class TrackPlayer : bell::Task {
 
   // CDNTrackStream::TrackInfo getCurrentTrackInfo();
   void seekMs(size_t ms);
-  void resetState();
+  void resetState(bool paused = false);
 
   // Vorbis codec callbacks
   size_t _vorbisRead(void* ptr, size_t size, size_t nmemb);
@@ -88,6 +89,7 @@ class TrackPlayer : bell::Task {
   std::atomic<bool> pendingReset = false;
   std::atomic<bool> inFuture = false;
   std::atomic<size_t> pendingSeekPositionMs = 0;
+  std::atomic<bool> startPaused = false;
 
   std::mutex runningMutex;
 

@@ -97,6 +97,8 @@ void TrackInfo::loadPbTrack(Track* pbTrack, const std::vector<uint8_t>& gid) {
     }
   }
 
+  number = pbTrack->has_number ? pbTrack->number : 0;
+  discNumber = pbTrack->has_disc_number ? pbTrack->disc_number : 0;
   duration = pbTrack->duration;
 }
 
@@ -113,6 +115,8 @@ void TrackInfo::loadPbEpisode(Episode* pbEpisode,
     imageUrl = "https://i.scdn.co/image/" + bytesToHexString(imageId);
   }
 
+  number = pbEpisode->has_number ? pbEpisode->number : 0;
+  discNumber = 0;
   duration = pbEpisode->duration;
 }
 
@@ -504,11 +508,18 @@ void TrackQueue::processTrack(std::shared_ptr<QueuedTrack> track) {
 
 bool TrackQueue::queueNextTrack(int offset, uint32_t positionMs) {
   const int requestedRefIndex = offset + currentTracksIndex;
+
   if (requestedRefIndex < 0 || requestedRefIndex >= currentTracks.size()) {
     return false;
   }
 
-  if (offset < 0) {
+  // in case we re-queue current track, make sure position is updated (0)
+  if (offset == 0 && preloadedTracks.size() &&
+      preloadedTracks[0]->ref == currentTracks[currentTracksIndex]) {
+    preloadedTracks.pop_front();
+  }
+
+  if (offset <= 0) {
     preloadedTracks.push_front(std::make_shared<QueuedTrack>(
         currentTracks[requestedRefIndex], ctx, positionMs));
   } else {
@@ -520,13 +531,30 @@ bool TrackQueue::queueNextTrack(int offset, uint32_t positionMs) {
 }
 
 bool TrackQueue::skipTrack(SkipDirection dir, bool expectNotify) {
-  bool canSkipNext = currentTracks.size() > currentTracksIndex + 1;
-  bool canSkipPrev = currentTracksIndex > 0;
+  bool skipped = true;
+  std::scoped_lock lock(tracksMutex);
 
-  if ((dir == SkipDirection::NEXT && canSkipNext) ||
-      (dir == SkipDirection::PREV && canSkipPrev)) {
-    std::scoped_lock lock(tracksMutex);
-    if (dir == SkipDirection::NEXT) {
+  if (dir == SkipDirection::PREV) {
+    uint64_t position =
+        !playbackState->innerFrame.state.has_position_ms
+            ? 0
+            : playbackState->innerFrame.state.position_ms +
+                  ctx->timeProvider->getSyncedTimestamp() -
+                  playbackState->innerFrame.state.position_measured_at;
+
+    if (currentTracksIndex > 0 && position < 3000) {
+      queueNextTrack(-1);
+
+      if (preloadedTracks.size() > MAX_TRACKS_PRELOAD) {
+        preloadedTracks.pop_back();
+      }
+
+      currentTracksIndex--;
+    } else {
+      queueNextTrack(0);
+    }
+  } else {
+    if (currentTracks.size() > currentTracksIndex + 1) {
       preloadedTracks.pop_front();
 
       if (!queueNextTrack(preloadedTracks.size() + 1)) {
@@ -535,15 +563,11 @@ bool TrackQueue::skipTrack(SkipDirection dir, bool expectNotify) {
 
       currentTracksIndex++;
     } else {
-      queueNextTrack(-1);
-
-      if (preloadedTracks.size() > MAX_TRACKS_PRELOAD) {
-        preloadedTracks.pop_back();
-      }
-
-      currentTracksIndex--;
+      skipped = false;
     }
+  }
 
+  if (skipped) {
     // Update frame data
     playbackState->innerFrame.state.playing_track_index = currentTracksIndex;
 
@@ -551,11 +575,9 @@ bool TrackQueue::skipTrack(SkipDirection dir, bool expectNotify) {
       // Reset position to zero
       notifyPending = true;
     }
-
-    return true;
   }
 
-  return false;
+  return skipped;
 }
 
 bool TrackQueue::hasTracks() {
@@ -569,17 +591,17 @@ bool TrackQueue::isFinished() {
   return currentTracksIndex >= currentTracks.size() - 1;
 }
 
-void TrackQueue::updateTracks(uint32_t requestedPosition, bool initial) {
+bool TrackQueue::updateTracks(uint32_t requestedPosition, bool initial) {
   std::scoped_lock lock(tracksMutex);
+  bool cleared = true;
+
+  // Copy requested track list
+  currentTracks = playbackState->remoteTracks;
+  currentTracksIndex = playbackState->innerFrame.state.playing_track_index;
 
   if (initial) {
     // Clear preloaded tracks
     preloadedTracks.clear();
-
-    // Copy requested track list
-    currentTracks = playbackState->remoteTracks;
-
-    currentTracksIndex = playbackState->innerFrame.state.playing_track_index;
 
     if (currentTracksIndex < currentTracks.size()) {
       // Push a song on the preloaded queue
@@ -590,14 +612,25 @@ void TrackQueue::updateTracks(uint32_t requestedPosition, bool initial) {
     notifyPending = true;
 
     playableSemaphore->give();
+  } else if (preloadedTracks[0]->loading) {
+    // try to not re-load track if we are still loading it
+
+    // remove everything except first track
+    preloadedTracks.erase(preloadedTracks.begin() + 1, preloadedTracks.end());
+
+    // Push a song on the preloaded queue
+    CSPOT_LOG(info, "Keeping current track %d", currentTracksIndex);
+    queueNextTrack(1);
+
+    cleared = false;
   } else {
     // Clear preloaded tracks
     preloadedTracks.clear();
 
-    // Copy requested track list
-    currentTracks = playbackState->remoteTracks;
-
     // Push a song on the preloaded queue
+    CSPOT_LOG(info, "Re-loading current track");
     queueNextTrack(0, requestedPosition);
   }
+
+  return cleared;
 }

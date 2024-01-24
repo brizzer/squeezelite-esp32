@@ -59,7 +59,24 @@ is enough and much faster than a mutex
 static bool polling;
 static sockfd fd;
 
-struct streamstate stream;
+struct EXT_RAM_ATTR streamstate stream;
+
+static EXT_RAM_ATTR struct {
+    bool flac;
+	enum { OGG_OFF, OGG_SYNC, OGG_HEADER, OGG_SEGMENTS, OGG_PAGE } state;
+	size_t want, miss, match;
+    u64_t granule;
+	u8_t* data, segments[255];
+#pragma pack(push, 1)    
+	struct {
+		char pattern[4];
+		u8_t version, type;
+		u64_t granule;
+		u32_t serial, page, checksum;
+		u8_t count;
+	} header;
+#pragma pack(pop)    
+} ogg;
 
 #if USE_SSL
 static SSL_CTX *SSLctx;
@@ -113,7 +130,6 @@ static int _poll(SSL *ssl, struct pollfd *pollinfo, int timeout) {
 }
 #endif
 
-
 static bool send_header(void) {
 	char *ptr = stream.header;
 	int len = stream.header_len;
@@ -148,6 +164,8 @@ static bool running = true;
 static void _disconnect(stream_state state, disconnect_code disconnect) {
 	stream.state = state;
 	stream.disconnect = disconnect;
+    if (ogg.state == OGG_PAGE && ogg.data) free(ogg.data);
+    ogg.data = NULL;
 #if USE_SSL
 	if (ssl) {
 		SSL_shutdown(ssl);
@@ -158,6 +176,135 @@ static void _disconnect(stream_state state, disconnect_code disconnect) {
 	closesocket(fd);
 	fd = -1;
 	wake_controller();
+}
+
+static size_t memfind(const u8_t* haystack, size_t n, const char* needle, size_t len, size_t* offset) {
+	size_t i;
+	for (i = 0; i < n && *offset != len; i++) *offset = (haystack[i] == needle[*offset]) ? *offset + 1 : 0;
+	return i;
+}
+
+/* https://xiph.org/ogg/doc/framing.html 
+ * https://xiph.org/flac/ogg_mapping.html
+ * https://xiph.org/vorbis/doc/Vorbis_I_spec.html#x1-610004.2 */
+ 
+static void stream_ogg(size_t n) {
+	if (ogg.state == OGG_OFF) return;
+	u8_t* p = streambuf->writep;
+
+	while (n) {
+		size_t consumed = min(ogg.miss, n);
+
+		// copy as many bytes as possible and come back later if we do'nt have enough
+		if (ogg.data) {
+			memcpy(ogg.data + ogg.want - ogg.miss, p, consumed);
+			ogg.miss -= consumed;
+			if (ogg.miss) return;
+		}
+
+		// we have what we want, let's parse
+		switch (ogg.state) {
+		case OGG_SYNC: {
+			ogg.miss -= consumed;
+			if (consumed) break;
+
+			// we have to memorize position in case any of last 3 bytes match...
+			size_t pos = memfind(p, n, "OggS", 4, &ogg.match);
+			if (ogg.match == 4) {
+				consumed = pos - ogg.match;
+				ogg.state = OGG_HEADER;
+				ogg.miss = ogg.want = sizeof(ogg.header);
+				ogg.data = (u8_t*) &ogg.header;
+				ogg.match = 0;
+			} else {
+                if (!ogg.match) LOG_INFO("OggS not at expected position %zu/%zu", pos, n);
+                LOG_INFO("OggS not at expected position %zu/%zu", pos, n);
+				return;
+			}
+			break;
+		}
+		case OGG_HEADER:
+			if (!memcmp(ogg.header.pattern, "OggS", 4)) {
+				ogg.miss = ogg.want = ogg.header.count;
+				ogg.data = ogg.segments;
+				ogg.state = OGG_SEGMENTS;
+			} else {
+				ogg.state = OGG_SYNC;
+				ogg.data = NULL;
+			}
+			break;
+		case OGG_SEGMENTS:
+			// calculate size of page using lacing values
+			for (size_t i = 0; i < ogg.want; i++) ogg.miss += ogg.data[i];
+			ogg.want = ogg.miss;
+
+            if (ogg.header.granule == 0 || (ogg.header.granule == -1 && ogg.granule == 0)) {
+				// granule 0 means a new stream, so let's look into it
+				ogg.state = OGG_PAGE;
+				ogg.data = malloc(ogg.want);
+			} else {
+				// otherwise, jump over data
+				ogg.state = OGG_SYNC;
+				ogg.data = NULL;
+			}
+
+            // memorize granule for next page
+            if (ogg.header.granule != -1) ogg.granule = ogg.header.granule;            
+			break;
+		case OGG_PAGE: {
+			char** tag = (char* []){ "\x3vorbis", "OpusTags", NULL };
+			size_t ofs = 0;
+
+			/* with OggFlac, we need the next page (packet) - VorbisComment is wrapped into a FLAC_METADATA
+			 * and except with vorbis, comment packet starts a new page but even in vorbis, it won't span
+			 * accross multiple pages */
+			if (ogg.flac) ofs = 4;
+			else if (!memcmp(ogg.data, "\x7f""FLAC", 5)) ogg.flac = true;
+			else for (size_t n = 0; *tag; tag++, ofs = 0) if ((ofs = memfind(ogg.data, ogg.want, *tag, strlen(*tag), &n)) && n == strlen(*tag)) break;
+	
+			if (ofs) {			
+				// u32:len,char[]:vendorId, u32:N, N x (u32:len,char[]:comment)
+				char* p = (char*) ogg.data + ofs;
+				p += *p + 4;
+				u32_t count = *p;
+				p += 4;
+
+				// LMS metadata format for Ogg is "Ogg", N x (u16:len,char[]:comment)
+				memcpy(stream.header, "Ogg", 3);
+				stream.header_len = 3;
+
+				for (u32_t len; count--; p += len) {
+					len = *p;
+					p += 4;
+
+					// only report what we use and don't overflow (network byte order)
+					if (!strncasecmp(p, "TITLE=", 6) || !strncasecmp(p, "ARTIST=", 7) || !strncasecmp(p, "ALBUM=", 6)) {
+						if (stream.header_len + len > MAX_HEADER) break;
+						stream.header[stream.header_len++] = len >> 8;
+						stream.header[stream.header_len++] = len;
+						memcpy(stream.header + stream.header_len, p, len);
+						stream.header_len += len;
+                        LOG_INFO("metadata: %.*s", len, p);
+					}
+				}
+
+                ogg.flac = false;
+				stream.meta_send = true;
+				wake_controller();
+				LOG_INFO("Ogg metadata length: %u", stream.header_len - 3);
+			}
+			free(ogg.data);
+            ogg.data = NULL;
+			ogg.state = OGG_SYNC;
+			break;
+		}
+        default: 
+            break;
+		}
+
+		p += consumed;
+		n -= consumed;
+	}
 }
 
 static void *stream_thread() {
@@ -343,6 +490,7 @@ static void *stream_thread() {
 					}
 					
 					if (n > 0) {
+                        stream_ogg(n);
 						_buf_inc_writep(streambuf, n);
 						stream.bytes += n;
 						if (stream.meta_interval) {
@@ -485,7 +633,7 @@ void stream_file(const char *header, size_t header_len, unsigned threshold) {
 	UNLOCK;
 }
 
-void stream_sock(u32_t ip, u16_t port, const char *header, size_t header_len, unsigned threshold, bool cont_wait) {
+void stream_sock(u32_t ip, u16_t port, bool use_ssl, bool use_ogg, const char *header, size_t header_len, unsigned threshold, bool cont_wait) {
 	struct sockaddr_in addr;
 
 #if EMBEDDED
@@ -584,6 +732,10 @@ void stream_sock(u32_t ip, u16_t port, const char *header, size_t header_len, un
 	stream.sent_headers = false;
 	stream.bytes = 0;
 	stream.threshold = threshold;
+    
+    ogg.miss = ogg.match = 0;
+	ogg.state = use_ogg ? OGG_SYNC : OGG_OFF;
+    ogg.flac = false;
 
 	UNLOCK;
 }
@@ -604,6 +756,8 @@ bool stream_disconnect(void) {
 		disc = true;
 	}
 	stream.state = STOPPED;
+    if (ogg.state == OGG_PAGE && ogg.data) free(ogg.data);
+    ogg.data = NULL;
 	UNLOCK;
 	return disc;
 }

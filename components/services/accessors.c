@@ -27,7 +27,9 @@
 #include "soc/efuse_periph.h"
 #include "driver/gpio.h"
 #include "driver/spi_common_internal.h"
+#if CONFIG_IDF_TARGET_ESP32   
 #include "esp32/rom/efuse.h"
+#endif
 #include "tools.h"
 #include "monitor.h"
 #include "messaging.h"
@@ -316,6 +318,28 @@ esp_err_t config_rotary_set(rotary_struct_t * config){
 	}
 	FREE_AND_NULL(config_buffer);
 	FREE_AND_NULL(config_buffer2);	
+	return err;	
+}
+
+/****************************************************************************************
+ * 
+ */
+esp_err_t config_ledvu_set(ledvu_struct_t * config){
+	int buffer_size=512;
+	esp_err_t err=ESP_OK;
+	char * config_buffer=malloc_init_external(buffer_size);
+	if(config_buffer)  {
+		snprintf(config_buffer,buffer_size,"%s,length=%i,gpio=%i,scale=%i",config->type, config->length, config->gpio, config->scale);
+		log_send_messaging(MESSAGING_INFO,"Updating ledvu configuration to %s",config_buffer);
+		err = config_set_value(NVS_TYPE_STR, "led_vu_config", config_buffer);
+		if(err!=ESP_OK){
+			log_send_messaging(MESSAGING_ERROR,"Error: %s",esp_err_to_name(err));
+		}
+	} 
+	else {
+		err = ESP_ERR_NO_MEM;
+	}
+	FREE_AND_NULL(config_buffer);
 	return err;	
 }
 
@@ -733,6 +757,23 @@ const rotary_struct_t * config_rotary_get() {
 }
 
 /****************************************************************************************
+ * 
+ */
+const ledvu_struct_t * config_ledvu_get() {
+
+	static ledvu_struct_t ledvu={  .type = "WS2812", .gpio = -1, .length = 0, .scale= 100 };
+	char *config = config_alloc_get_default(NVS_TYPE_STR, "led_vu_config", NULL, 0);
+	if (config && *config) {
+		PARSE_PARAM_STR(config, "type", '=', ledvu.type, 15);
+		PARSE_PARAM(config, "gpio", '=', ledvu.gpio);
+		PARSE_PARAM(config, "length", '=', ledvu.length);
+		PARSE_PARAM(config, "scale", '=', ledvu.scale);
+		free(config);
+	}
+	return &ledvu;
+}
+
+/****************************************************************************************
  *
  */
 cJSON * get_gpio_entry(const char * name, const char * prefix, int gpio, bool fixed){
@@ -938,6 +979,17 @@ cJSON * get_Rotary_GPIO(cJSON * list){
 /****************************************************************************************
  *
  */
+cJSON * get_ledvu_GPIO(cJSON * list){
+	cJSON * llist = list?list:cJSON_CreateArray();
+
+	const ledvu_struct_t *ledvu= config_ledvu_get();
+	add_gpio_for_value(llist,"gpio",ledvu->gpio, "led_vu", false);
+	return llist;
+}
+
+/****************************************************************************************
+ *
+ */
 esp_err_t get_gpio_structure(cJSON * gpio_entry, gpio_entry_t ** gpio){
 	esp_err_t err = ESP_OK;
 	*gpio = malloc_init_external(sizeof(gpio_entry_t));
@@ -1037,6 +1089,9 @@ gpio_entry_t * get_gpio_by_name(char * name,char * group, bool refresh){
 
 
 cJSON * get_psram_gpio_list(cJSON * list){
+	cJSON * llist=list;
+	
+#if CONFIG_IDF_TARGET_ESP32    
 	const char * psram_dev = "psram";
 	const char * flash_dev = "flash";
 	const char * clk = "clk";
@@ -1045,7 +1100,6 @@ cJSON * get_psram_gpio_list(cJSON * list){
 	const char * spid_sd1_io = "spid_sd1_io";
 	const char * spiwp_sd3_io = "spiwp_sd3_io";
 	const char * spihd_sd2_io = "spihd_sd2_io";
-	cJSON * llist=list;
 	
     uint32_t chip_ver = REG_GET_FIELD(EFUSE_BLK0_RDATA3_REG, EFUSE_RD_CHIP_VER_PKG);
     uint32_t pkg_ver = chip_ver & 0x7;
@@ -1105,6 +1159,9 @@ cJSON * get_psram_gpio_list(cJSON * list){
 		cJSON_AddItemToArray(list,get_gpio_entry(clk,flash_dev,EFUSE_SPICONFIG_RET_SPICLK(spiconfig),true));
 		cJSON_AddItemToArray(list,get_gpio_entry(cs,flash_dev,EFUSE_SPICONFIG_RET_SPICS0(spiconfig),true));
 	}
+#else
+#pragma message("need to add esp32-s3 specific SPIRAM GPIO config code")
+#endif    
     return llist;	
 }
 
@@ -1140,6 +1197,7 @@ cJSON * get_gpio_list(bool refresh) {
 	gpio_list=get_SPI_GPIO(gpio_list);
 	gpio_list=get_I2C_GPIO(gpio_list);
 	gpio_list=get_DAC_GPIO(gpio_list);
+	gpio_list=get_ledvu_GPIO(gpio_list);
 	gpio_list=get_psram_gpio_list(gpio_list);
 	gpio_list=get_eth_GPIO(gpio_list);
 	return gpio_list;
